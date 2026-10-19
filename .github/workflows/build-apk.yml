@@ -42,7 +42,14 @@ jobs:
             const fs = require("fs");
             const path = require("path");
             const clientDir = path.resolve("dist/client");
+            const fallbackClientDir = path.resolve(".output/public");
             const assetsDir = path.join(clientDir, "assets");
+            if (!fs.existsSync(assetsDir) && fs.existsSync(path.join(fallbackClientDir, "assets"))) {
+              fs.mkdirSync(clientDir, { recursive: true });
+              fs.cpSync(fallbackClientDir, clientDir, { recursive: true });
+              console.log("Copied Nitro public assets into Capacitor webDir");
+            }
+            if (!fs.existsSync(assetsDir)) throw new Error("Client assets directory not found in dist/client or .output/public");
             const files = fs.readdirSync(assetsDir);
             const jsFile = files.find(f => f.startsWith("index-") && f.endsWith(".js"));
             const cssFile = files.find(f => f.startsWith("styles-") && f.endsWith(".css"));
