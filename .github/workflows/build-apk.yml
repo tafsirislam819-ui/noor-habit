@@ -38,16 +38,33 @@ jobs:
       - name: Build Web Assets & Prerender Hydration HTML
         run: |
           bun run build
-          PORT=3456 HOST=127.0.0.1 bun dist/server/index.mjs &
+          
+          SERVER_FILE="dist/server/index.mjs"
+          [ ! -f "$SERVER_FILE" ] && SERVER_FILE=".output/server/index.mjs"
+          
+          CLIENT_DIR="dist/client"
+          [ ! -d "$CLIENT_DIR" ] && CLIENT_DIR=".output/public"
+          
+          mkdir -p dist/client
+          if [ "$CLIENT_DIR" != "dist/client" ]; then
+            cp -r "$CLIENT_DIR"/* dist/client/
+          fi
+          
+          echo "Using server file: $SERVER_FILE and client dir: $CLIENT_DIR"
+          PORT=3456 HOST=127.0.0.1 bun "$SERVER_FILE" &
           SERVER_PID=$!
+          
           for i in {1..30}; do
             if curl -s http://127.0.0.1:3456/ > /dev/null 2>&1; then
+              echo "Server ready after $i checks"
               break
             fi
             sleep 0.5
           done
+          
           curl -s http://127.0.0.1:3456/ > dist/client/index.html
           kill $SERVER_PID || true
+          
           echo "Prerendered hydration HTML size: $(wc -c < dist/client/index.html) bytes"
           head -n 5 dist/client/index.html
 
