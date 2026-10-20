@@ -1,3 +1,4 @@
+import { StatusBar } from "@capacitor/status-bar";
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { Link, useLocation } from "@tanstack/react-router";
 import { Home, ListChecks, Moon, BarChart3, Bot, Users, Settings } from "lucide-react";
@@ -107,13 +108,14 @@ function useScheduler(onAggressive: (a: Alarm) => void) {
         })),
       ];
 
+      if (!s.notificationsEnabled) return;
       for (const e of entries) {
         if (e.mode === "off" || !e.time || e.done) continue;
         const [h = 0, m = 0] = e.time.split(":").map(Number);
         const itemMin = h * 60 + m;
-        // Trigger if current time is within [0..2] minutes after scheduled time
+        // Trigger only within the exact minute
         const diff = nowMin - itemMin;
-        if (diff < 0 || diff > 2) continue;
+        if (diff !== 0) continue;
 
         const key = `${e.id}-${day}`;
         if (fired.current.has(key)) continue;
@@ -127,7 +129,7 @@ function useScheduler(onAggressive: (a: Alarm) => void) {
     };
 
     tick();
-    const iv = setInterval(tick, 10000);
+    const iv = setInterval(tick, 60000);
     return () => clearInterval(iv);
   }, [t, onAggressive]);
 
@@ -137,6 +139,7 @@ function useScheduler(onAggressive: (a: Alarm) => void) {
   useEffect(() => {
     if (!isNative()) return;
     const day = today();
+    const notifsOn = useApp.getState().notificationsEnabled;
     syncNativeSchedules(
       prayers,
       items,
@@ -145,6 +148,7 @@ function useScheduler(onAggressive: (a: Alarm) => void) {
         id.startsWith("p-")
           ? !!prayers.find((p) => "p-" + p.key === id)?.doneDates.includes(day)
           : !!items.find((i) => i.id === id)?.doneDates.includes(day),
+      notifsOn
     ).catch(() => {});
   }, [prayers, items, t]);
 }
@@ -246,7 +250,7 @@ export function AppShell({ children }: { children: ReactNode }) {
           </Link>
         ))}
       </nav>
-      <main className="flex-1 px-4 pb-28 pt-5 md:pb-6">{children}</main>
+      <main className="flex-1 px-4 pb-28 pt-[max(1.25rem,env(safe-area-inset-top,0px))] md:pb-6">{children}</main>
       <nav
         className="glass fixed inset-x-3 bottom-3 z-40 flex justify-between px-3 py-2.5 backdrop-blur-xl shadow-2xl md:hidden"
         style={{ paddingBottom: "max(0.6rem, env(safe-area-inset-bottom))" }}
