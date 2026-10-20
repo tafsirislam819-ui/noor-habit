@@ -10,8 +10,10 @@ import {
   Clock,
   Sparkles,
   SlidersHorizontal,
+  Target,
+  ListTodo,
 } from "lucide-react";
-import { useApp, today, PRAYERS, type PrayerKey } from "@/lib/store";
+import { useApp, today, PRAYERS, formatAppTime } from "@/lib/store";
 import { useT } from "@/lib/i18n";
 import { cn } from "@/lib/utils";
 
@@ -28,7 +30,7 @@ export const Route = createFileRoute("/analytics")({
 });
 
 /** Tabular Hijri calculation with moon sighting offset */
-function getHijriInfo(date: Date, offsetDays: number = 0) {
+function getHijriInfo(date: Date, offsetDays: number = 0, isBangla: boolean = true) {
   const d = new Date(date);
   d.setDate(d.getDate() + offsetDays);
 
@@ -57,48 +59,125 @@ function getHijriInfo(date: Date, offsetDays: number = 0) {
   if (im === 13) im = 12;
   const id = remYear - Math.floor(29.5001 * im - 29);
 
-  const hijriMonthNamesBn = [
+  const hijriMonthsBn = [
     "মহররম", "সফর", "রবিউল আউয়াল", "রবিউস সানি",
     "জমাদিউল আউয়াল", "জমাদিউস সানি", "রজব", "শাবান",
-    "রমজান", "শাওয়াল", "জিলকদ", "জিলহজ"
+    "রমজান", "শাওয়াল", "জিলকদ", "জিলহজ",
+  ];
+
+  const hijriMonthsEn = [
+    "Muharram", "Safar", "Rabi' al-Awwal", "Rabi' al-Thani",
+    "Jumada al-Awwal", "Jumada al-Thani", "Rajab", "Sha'ban",
+    "Ramadan", "Shawwal", "Dhu al-Qi'dah", "Dhu al-Hijjah",
   ];
 
   const hDay = Math.max(1, Math.min(30, Math.round(id)));
   const hMonth = Math.max(1, Math.min(12, Math.round(im)));
   const hYear = Math.round(iy);
 
+  const monthName = isBangla ? hijriMonthsBn[hMonth - 1] || "" : hijriMonthsEn[hMonth - 1] || "";
+  const fullText = isBangla
+    ? `${hDay} ${monthName} ${hYear} হিজরি`
+    : `${hDay} ${monthName} ${hYear} AH`;
+
   return {
     day: hDay,
     month: hMonth,
     year: hYear,
-    monthNameBn: hijriMonthNamesBn[hMonth - 1] || "",
-    fullTextBn: `${hDay} ${hijriMonthNamesBn[hMonth - 1] || ""} ${hYear} হিজরি`,
+    monthName,
+    fullText,
   };
 }
 
 /** Check special Islamic event for a Hijri date or Friday */
-function getIslamicEvent(date: Date, hDay: number, hMonth: number) {
-  // Friday check
+function getIslamicEvent(date: Date, hDay: number, hMonth: number, isBangla: boolean = true) {
   const isFriday = date.getDay() === 5;
 
-  if (hMonth === 9 && hDay === 1) return { title: "১ রমজান (রোজা শুরু)", badge: "রমজান", color: "text-amber-400 bg-amber-400/10 border-amber-400/30" };
-  if (hMonth === 9 && hDay === 17) return { title: "ঐতিহাসিক বদর দিবস", badge: "বদর", color: "text-blue-400 bg-blue-400/10 border-blue-400/30" };
-  if (hMonth === 9 && hDay === 27) return { title: "পবিত্র শবে কদর", badge: "কদর", color: "text-purple-400 bg-purple-400/10 border-purple-400/30" };
-  if (hMonth === 10 && hDay === 1) return { title: "পবিত্র ঈদুল ফিতর", badge: "ঈদ", color: "text-emerald-400 bg-emerald-400/10 border-emerald-400/30" };
-  if (hMonth === 12 && hDay === 9) return { title: "আরাফাত দিবস ও হজ", badge: "হজ", color: "text-amber-400 bg-amber-400/10 border-amber-400/30" };
-  if (hMonth === 12 && hDay === 10) return { title: "পবিত্র ঈদুল আজহা (কোরবানি)", badge: "কোরবানি", color: "text-emerald-400 bg-emerald-400/10 border-emerald-400/30" };
-  if (hMonth === 1 && hDay === 10) return { title: "পবিত্র আশুরা", badge: "আশুরা", color: "text-rose-400 bg-rose-400/10 border-rose-400/30" };
-  if (hMonth === 3 && hDay === 12) return { title: "ঈদে মিলাদুন্নবী (সা.)", badge: "মিলাদ", color: "text-emerald-400 bg-emerald-400/10 border-emerald-400/30" };
-  if (hMonth === 7 && hDay === 27) return { title: "পবিত্র শবে মেরাজ", badge: "মেরাজ", color: "text-sky-400 bg-sky-400/10 border-sky-400/30" };
-  if (hMonth === 8 && hDay === 15) return { title: "পবিত্র শবে বরাত", badge: "শবে বরাত", color: "text-indigo-400 bg-indigo-400/10 border-indigo-400/30" };
-  if (isFriday) return { title: "পবিত্র জুমার দিন", badge: "জুমা", color: "text-emerald-400 bg-emerald-400/10 border-emerald-400/30" };
+  if (hMonth === 9 && hDay === 1) {
+    return {
+      title: isBangla ? "১ রমজান (রোজা শুরু)" : "1st Ramadan (Fasting Begins)",
+      badge: isBangla ? "রমজান" : "Ramadan",
+      color: "text-amber-400 bg-amber-400/10 border-amber-400/30",
+    };
+  }
+  if (hMonth === 9 && hDay === 17) {
+    return {
+      title: isBangla ? "ঐতিহাসিক বদর দিবস" : "Day of Badr",
+      badge: isBangla ? "বদর" : "Badr",
+      color: "text-blue-400 bg-blue-400/10 border-blue-400/30",
+    };
+  }
+  if (hMonth === 9 && hDay === 27) {
+    return {
+      title: isBangla ? "পবিত্র শবে কদর" : "Laylat al-Qadr",
+      badge: isBangla ? "কদর" : "Qadr",
+      color: "text-purple-400 bg-purple-400/10 border-purple-400/30",
+    };
+  }
+  if (hMonth === 10 && hDay === 1) {
+    return {
+      title: isBangla ? "পবিত্র ঈদুল ফিতর" : "Eid al-Fitr",
+      badge: isBangla ? "ঈদ" : "Eid",
+      color: "text-emerald-400 bg-emerald-400/10 border-emerald-400/30",
+    };
+  }
+  if (hMonth === 12 && hDay === 9) {
+    return {
+      title: isBangla ? "আরাফাত দিবস ও হজ" : "Day of Arafah & Hajj",
+      badge: isBangla ? "হজ" : "Hajj",
+      color: "text-amber-400 bg-amber-400/10 border-amber-400/30",
+    };
+  }
+  if (hMonth === 12 && hDay === 10) {
+    return {
+      title: isBangla ? "পবিত্র ঈদুল আজহা (কোরবানি)" : "Eid al-Adha",
+      badge: isBangla ? "কোরবানি" : "Eid",
+      color: "text-emerald-400 bg-emerald-400/10 border-emerald-400/30",
+    };
+  }
+  if (hMonth === 1 && hDay === 10) {
+    return {
+      title: isBangla ? "পবিত্র আশুরা" : "Holy Ashura",
+      badge: isBangla ? "আশুরা" : "Ashura",
+      color: "text-rose-400 bg-rose-400/10 border-rose-400/30",
+    };
+  }
+  if (hMonth === 3 && hDay === 12) {
+    return {
+      title: isBangla ? "ঈদে মিলাদুন্নবী (সা.)" : "Mawlid al-Nabi (PBUH)",
+      badge: isBangla ? "মিলাদ" : "Mawlid",
+      color: "text-emerald-400 bg-emerald-400/10 border-emerald-400/30",
+    };
+  }
+  if (hMonth === 7 && hDay === 27) {
+    return {
+      title: isBangla ? "পবিত্র শবে মেরাজ" : "Shab-e-Miraj",
+      badge: isBangla ? "মেরাজ" : "Miraj",
+      color: "text-sky-400 bg-sky-400/10 border-sky-400/30",
+    };
+  }
+  if (hMonth === 8 && hDay === 15) {
+    return {
+      title: isBangla ? "পবিত্র শবে বরাত" : "Shab-e-Barat",
+      badge: isBangla ? "শবে বরাত" : "Barat",
+      color: "text-indigo-400 bg-indigo-400/10 border-indigo-400/30",
+    };
+  }
+  if (isFriday) {
+    return {
+      title: isBangla ? "পবিত্র জুমার দিন" : "Blessed Friday (Jumu'ah)",
+      badge: isBangla ? "জুমা" : "Jumu'ah",
+      color: "text-emerald-400 bg-emerald-400/10 border-emerald-400/30",
+    };
+  }
 
   return null;
 }
 
 function Analytics() {
   const t = useT();
-  const { prayers, items, hijriOffset, setHijriOffset } = useApp();
+  const { prayers, items, goals, todos, hijriOffset, setHijriOffset, lang, timeFormat } = useApp();
+  const isBn = lang === "bn";
 
   const todayStr = today();
   const [selectedDate, setSelectedDate] = useState<string>(todayStr);
@@ -197,12 +276,12 @@ function Analytics() {
   }, [selectedDate]);
 
   const selectedHijri = useMemo(() => {
-    return getHijriInfo(selectedDateObj, hijriOffset);
-  }, [selectedDateObj, hijriOffset]);
+    return getHijriInfo(selectedDateObj, hijriOffset, isBn);
+  }, [selectedDateObj, hijriOffset, isBn]);
 
   const selectedEvent = useMemo(() => {
-    return getIslamicEvent(selectedDateObj, selectedHijri.day, selectedHijri.month);
-  }, [selectedDateObj, selectedHijri]);
+    return getIslamicEvent(selectedDateObj, selectedHijri.day, selectedHijri.month, isBn);
+  }, [selectedDateObj, selectedHijri, isBn]);
 
   const selectedPrayers = useMemo(() => {
     return PRAYERS.map((k) => {
@@ -211,11 +290,11 @@ function Analytics() {
       return {
         key: k,
         name: t(k as never),
-        time: pr?.time || "",
+        time: pr?.time ? formatAppTime(pr.time, timeFormat) : "",
         done: isDone,
       };
     });
-  }, [prayers, selectedDate, t]);
+  }, [prayers, selectedDate, t, timeFormat]);
 
   const selectedItems = useMemo(() => {
     return items.map((i) => ({
@@ -223,6 +302,26 @@ function Analytics() {
       done: i.doneDates.includes(selectedDate),
     }));
   }, [items, selectedDate]);
+
+  // Subtasks for selected day
+  const selectedGoalTasks = useMemo(() => {
+    const list: { goalTitle: string; subTaskTitle: string; done: boolean }[] = [];
+    goals.forEach((g) => {
+      g.subTasks.forEach((st) => {
+        list.push({
+          goalTitle: g.title,
+          subTaskTitle: st.title,
+          done: st.doneDates.includes(selectedDate),
+        });
+      });
+    });
+    return list;
+  }, [goals, selectedDate]);
+
+  // Todos for selected day
+  const selectedTodos = useMemo(() => {
+    return todos.filter((td) => !td.dueDate || td.dueDate === selectedDate);
+  }, [todos, selectedDate]);
 
   const prayersDoneCount = selectedPrayers.filter((p) => p.done).length;
   const itemsDoneCount = selectedItems.filter((i) => i.done).length;
@@ -234,28 +333,37 @@ function Analytics() {
     for (let i = 0; i <= 365; i++) {
       const d = new Date(now);
       d.setDate(d.getDate() + i);
-      const h = getHijriInfo(d, hijriOffset);
-      const ev = getIslamicEvent(d, h.day, h.month);
+      const h = getHijriInfo(d, hijriOffset, isBn);
+      const ev = getIslamicEvent(d, h.day, h.month, isBn);
       // Exclude generic weekly Friday from major events list
-      if (ev && ev.badge !== "জুমা") {
+      if (ev && !ev.badge.includes("জুমা") && !ev.badge.includes("Jumu'ah")) {
         eventsList.push({
           dateStr: today(d),
           dateObj: d,
           title: ev.title,
           badge: ev.badge,
-          hijriText: h.fullTextBn,
+          hijriText: h.fullText,
           daysLeft: i,
         });
         if (eventsList.length >= 6) break;
       }
     }
     return eventsList;
-  }, [hijriOffset]);
+  }, [hijriOffset, isBn]);
 
   const monthNamesBn = [
     "জানুয়ারি", "ফেব্রুয়ারি", "মার্চ", "এপ্রিল", "মে", "জুন",
-    "জুলাই", "আগস্ট", "সেপ্টেম্বর", "অক্টোবর", "নভেম্বর", "ডিসেম্বর"
+    "জুলাই", "আগস্ট", "সেপ্টেম্বর", "অক্টোবর", "নভেম্বর", "ডিসেম্বর",
   ];
+  const monthNamesEn = [
+    "January", "February", "March", "April", "May", "June",
+    "July", "August", "September", "October", "November", "December",
+  ];
+  const currentMonthName = isBn ? monthNamesBn[month] : monthNamesEn[month];
+
+  const weekdaysBn = ["রবি", "সোম", "মঙ্গল", "বুধ", "বৃহঃ", "শুক্র", "শনি"];
+  const weekdaysEn = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+  const currentWeekdays = isBn ? weekdaysBn : weekdaysEn;
 
   return (
     <div className="flex flex-col gap-6">
@@ -263,7 +371,9 @@ function Analytics() {
       <header>
         <h1 className="text-3xl font-bold">{t("analytics")}</h1>
         <p className="mt-1 text-sm text-muted-foreground">
-          নামাজ, অভ্যাস এবং হিজরি ইসলামিক ক্যালেন্ডার
+          {isBn
+            ? "নামাজ, অভ্যাস, লক্ষ্য এবং হিজরি ক্যালেন্ডারের বিস্তারিত অ্যানালিটিক্স"
+            : "Prayers, habits, goals & Islamic Hijri calendar analytics"}
         </p>
       </header>
 
@@ -281,7 +391,9 @@ function Analytics() {
             <Flame className="size-5 text-warning fill-warning" />
             <span className="text-2xl font-bold text-warning">{streak}</span>
           </div>
-          <span className="mt-1 text-[11px] text-muted-foreground">{t("streak")} (দিন)</span>
+          <span className="mt-1 text-[11px] text-muted-foreground">
+            {t("streak")} ({isBn ? "দিন" : "days"})
+          </span>
         </div>
       </div>
 
@@ -292,7 +404,7 @@ function Analytics() {
           <div className="flex items-center gap-2">
             <CalendarIcon className="size-5 text-primary" />
             <h2 className="text-lg font-bold">
-              {monthNamesBn[month]} {year}
+              {currentMonthName} {year}
             </h2>
           </div>
 
@@ -301,30 +413,30 @@ function Analytics() {
               onClick={jumpToday}
               className="rounded-xl bg-secondary px-2.5 py-1 text-xs font-semibold hover:bg-muted transition"
             >
-              আজ
+              {isBn ? "আজ" : "Today"}
             </button>
             <button
               onClick={prevMonth}
               className="rounded-xl bg-muted p-1.5 hover:bg-muted/80 transition"
-              title="পূর্ববর্তী মাস"
+              title={isBn ? "পূর্ববর্তী মাস" : "Previous Month"}
             >
               <ChevronLeft className="size-4" />
             </button>
             <button
               onClick={nextMonth}
               className="rounded-xl bg-muted p-1.5 hover:bg-muted/80 transition"
-              title="পরবর্তী মাস"
+              title={isBn ? "পরবর্তী মাস" : "Next Month"}
             >
               <ChevronRight className="size-4" />
             </button>
           </div>
         </div>
 
-        {/* LUNAR OFFSET / MOON SIGHTING ADJUSTMENT (চাঁদ দেখার তারিখ সমন্বয়) */}
+        {/* LUNAR OFFSET / MOON SIGHTING ADJUSTMENT */}
         <div className="flex flex-wrap items-center justify-between gap-2 rounded-xl bg-muted/30 px-3 py-2 text-xs">
           <div className="flex items-center gap-1.5 text-muted-foreground">
             <SlidersHorizontal className="size-3.5 text-primary" />
-            <span>চাঁদ দেখার তারিখ সমন্বয় (Moon offset):</span>
+            <span>{isBn ? "চাঁদ দেখার তারিখ সমন্বয় (Moon offset):" : "Moon sighting adjustment:"}</span>
           </div>
           <div className="flex items-center gap-1">
             {[-1, 0, 1].map((off) => (
@@ -336,7 +448,7 @@ function Analytics() {
                   hijriOffset === off ? "bg-primary text-primary-foreground shadow" : "bg-muted text-muted-foreground hover:text-foreground"
                 )}
               >
-                {off === 0 ? "০ (স্বাভাবিক)" : off > 0 ? `+${off} দিন` : `${off} দিন`}
+                {off === 0 ? (isBn ? "০ (স্বাভাবিক)" : "0 (Default)") : off > 0 ? `+${off} ${isBn ? "দিন" : "day"}` : `${off} ${isBn ? "দিন" : "day"}`}
               </button>
             ))}
           </div>
@@ -344,20 +456,18 @@ function Analytics() {
 
         {/* WEEKDAYS HEADER */}
         <div className="grid grid-cols-7 text-center text-xs font-semibold text-muted-foreground">
-          <span>রবি</span>
-          <span>সোম</span>
-          <span>মঙ্গল</span>
-          <span>বুধ</span>
-          <span>বৃহঃ</span>
-          <span className="text-emerald-400 font-bold">শুক্র</span>
-          <span>শনি</span>
+          {currentWeekdays.map((w, idx) => (
+            <span key={w} className={idx === 5 ? "text-emerald-400 font-bold" : ""}>
+              {w}
+            </span>
+          ))}
         </div>
 
         {/* CALENDAR DAYS GRID */}
         <div className="grid grid-cols-7 gap-1">
           {calendarDays.map((cell, idx) => {
-            const h = getHijriInfo(cell.dateObj, hijriOffset);
-            const ev = getIslamicEvent(cell.dateObj, h.day, h.month);
+            const h = getHijriInfo(cell.dateObj, hijriOffset, isBn);
+            const ev = getIslamicEvent(cell.dateObj, h.day, h.month, isBn);
 
             const prayersDone = prayers.filter((p) => p.doneDates.includes(cell.dateKey)).length;
             const isToday = cell.dateKey === todayStr;
@@ -397,15 +507,15 @@ function Analytics() {
                   <div className="mt-1 flex items-center justify-center gap-0.5">
                     {prayersDone === 5 ? (
                       <span className="rounded bg-success/20 px-1 py-0.2 text-[9px] font-bold text-success">
-                        ৫/৫
+                        {isBn ? "৫/৫" : "5/5"}
                       </span>
                     ) : prayersDone > 0 ? (
                       <span className="rounded bg-warning/20 px-1 py-0.2 text-[9px] font-semibold text-warning">
-                        {prayersDone}/৫
+                        {isBn ? `${prayersDone}/৫` : `${prayersDone}/5`}
                       </span>
                     ) : (
                       <span className="rounded bg-destructive/15 px-1 py-0.2 text-[9px] font-semibold text-destructive/80">
-                        ০/৫
+                        {isBn ? "০/৫" : "0/5"}
                       </span>
                     )}
                   </div>
@@ -425,7 +535,7 @@ function Analytics() {
             <div className="flex items-center gap-2">
               <Clock className="size-4 text-primary" />
               <h3 className="text-base font-bold text-foreground">
-                {selectedDateObj.toLocaleDateString("bn-BD", {
+                {selectedDateObj.toLocaleDateString(isBn ? "bn-BD" : "en-US", {
                   weekday: "long",
                   year: "numeric",
                   month: "long",
@@ -434,7 +544,7 @@ function Analytics() {
               </h3>
             </div>
             <p className="mt-0.5 text-xs text-primary font-medium">
-              🌙 {selectedHijri.fullTextBn}
+              🌙 {selectedHijri.fullText}
             </p>
           </div>
 
@@ -449,7 +559,9 @@ function Analytics() {
         {/* 5 PRAYERS STATUS */}
         <div>
           <h4 className="text-xs font-semibold text-muted-foreground uppercase tracking-wider mb-2">
-            নামাজের হিসাব ({prayersDoneCount}/৫ ওয়াক্ত আদায়)
+            {isBn
+              ? `নামাজের হিসাব (${prayersDoneCount}/৫ ওয়াক্ত আদায়)`
+              : `Prayers Record (${prayersDoneCount}/5 Prayers Completed)`}
           </h4>
           <div className="grid grid-cols-1 sm:grid-cols-5 gap-2">
             {selectedPrayers.map((p) => (
@@ -476,13 +588,17 @@ function Analytics() {
           </div>
         </div>
 
-        {/* HABITS & TASKS STATUS */}
+        {/* HABITS STATUS */}
         <div>
           <h4 className="text-xs font-semibold text-muted-foreground uppercase tracking-wider mb-2">
-            অভ্যাস ও টাস্ক ({itemsDoneCount}/{selectedItems.length} সম্পন্ন)
+            {isBn
+              ? `দৈনিক অভ্যাস (${itemsDoneCount}/${selectedItems.length} সম্পন্ন)`
+              : `Daily Habits (${itemsDoneCount}/${selectedItems.length} Completed)`}
           </h4>
           {selectedItems.length === 0 ? (
-            <p className="text-xs text-muted-foreground">কোনো টাস্ক বা অভ্যাস যুক্ত করা নেই।</p>
+            <p className="text-xs text-muted-foreground">
+              {isBn ? "কোনো অভ্যাস যুক্ত করা নেই।" : "No habits added."}
+            </p>
           ) : (
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
               {selectedItems.map((item) => (
@@ -498,26 +614,95 @@ function Analytics() {
                   <span className="truncate pr-2">{item.title}</span>
                   {item.done ? (
                     <span className="flex items-center gap-1 text-[10px] text-success font-semibold shrink-0">
-                      <CheckCircle2 className="size-3.5" /> সম্পন্ন
+                      <CheckCircle2 className="size-3.5" /> {isBn ? "সম্পন্ন" : "Done"}
                     </span>
                   ) : (
-                    <span className="text-[10px] text-muted-foreground shrink-0">বাকি ছিল</span>
+                    <span className="text-[10px] text-muted-foreground shrink-0">{isBn ? "বাকি ছিল" : "Missed"}</span>
                   )}
                 </div>
               ))}
             </div>
           )}
         </div>
+
+        {/* GOAL SUBTASKS STATUS */}
+        {selectedGoalTasks.length > 0 && (
+          <div>
+            <h4 className="text-xs font-semibold text-muted-foreground uppercase tracking-wider mb-2 flex items-center gap-1.5">
+              <Target className="size-3.5 text-primary" />
+              {isBn ? "লক্ষ্যের দৈনিক টাস্ক (Goal Subtasks)" : "Goal Subtasks"}
+            </h4>
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+              {selectedGoalTasks.map((st, i) => (
+                <div
+                  key={i}
+                  className={cn(
+                    "flex items-center justify-between rounded-xl border p-2.5 text-xs transition",
+                    st.done
+                      ? "border-success/40 bg-success/10 text-success font-medium"
+                      : "border-border/40 bg-muted/30 text-muted-foreground"
+                  )}
+                >
+                  <div>
+                    <p className="font-semibold">{st.subTaskTitle}</p>
+                    <p className="text-[10px] text-muted-foreground">🎯 {st.goalTitle}</p>
+                  </div>
+                  {st.done ? (
+                    <span className="flex items-center gap-1 text-[10px] text-success font-semibold shrink-0">
+                      <CheckCircle2 className="size-3.5" /> {isBn ? "সম্পন্ন" : "Done"}
+                    </span>
+                  ) : (
+                    <span className="text-[10px] text-muted-foreground shrink-0">{isBn ? "বাকি" : "Pending"}</span>
+                  )}
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {/* ONE-OFF TO-DOS */}
+        {selectedTodos.length > 0 && (
+          <div>
+            <h4 className="text-xs font-semibold text-muted-foreground uppercase tracking-wider mb-2 flex items-center gap-1.5">
+              <ListTodo className="size-3.5 text-primary" />
+              {isBn ? "টু-ডু লিস্ট (To-Do List)" : "To-Do List"}
+            </h4>
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+              {selectedTodos.map((td) => (
+                <div
+                  key={td.id}
+                  className={cn(
+                    "flex items-center justify-between rounded-xl border p-2.5 text-xs transition",
+                    td.completed
+                      ? "border-success/40 bg-success/10 text-success font-medium"
+                      : "border-border/40 bg-muted/30 text-muted-foreground"
+                  )}
+                >
+                  <span className="truncate pr-2">{td.title}</span>
+                  {td.completed ? (
+                    <span className="flex items-center gap-1 text-[10px] text-success font-semibold shrink-0">
+                      <CheckCircle2 className="size-3.5" /> {isBn ? "সম্পন্ন" : "Done"}
+                    </span>
+                  ) : (
+                    <span className="text-[10px] text-muted-foreground shrink-0">{isBn ? "বাকি" : "Pending"}</span>
+                  )}
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
       </section>
 
       {/* UPCOMING ISLAMIC EVENTS (LIKE GOOGLE CALENDAR) */}
       <section className="glass flex flex-col gap-3 p-5">
         <h3 className="text-base font-bold flex items-center gap-2">
           <span>🕌</span>
-          আসন্ন গুরুত্বপূর্ণ ইসলামিক দিন ও পর্বসমূহ
+          {isBn ? "আসন্ন গুরুত্বপূর্ণ ইসলামিক দিন ও পর্বসমূহ" : "Upcoming Major Islamic Events"}
         </h3>
         <p className="text-xs text-muted-foreground">
-          চাঁদ দেখার সমন্বয় অনুযায়ী স্বয়ংক্রিয়ভাবে তারিখ আপডেট হয়:
+          {isBn
+            ? "চাঁদ দেখার সমন্বয় অনুযায়ী স্বয়ংক্রিয়ভাবে তারিখ আপডেট হয়:"
+            : "Dates automatically recalculate based on moon sighting offset:"}
         </p>
 
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5 mt-1">
@@ -533,7 +718,7 @@ function Analytics() {
               </div>
               <div className="text-right shrink-0">
                 <span className="rounded-full bg-primary/10 px-2.5 py-1 text-xs font-bold text-primary">
-                  {ev.daysLeft === 0 ? "আজ" : `${ev.daysLeft} দিন বাকি`}
+                  {ev.daysLeft === 0 ? (isBn ? "আজ" : "Today") : `${ev.daysLeft} ${isBn ? "দিন বাকি" : "days left"}`}
                 </span>
               </div>
             </div>

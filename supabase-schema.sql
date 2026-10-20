@@ -42,7 +42,7 @@ CREATE TABLE IF NOT EXISTS public.friendships (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     user_id UUID NOT NULL REFERENCES public.profiles(id) ON DELETE CASCADE,
     friend_id UUID NOT NULL REFERENCES public.profiles(id) ON DELETE CASCADE,
-    status TEXT NOT NULL CHECK (status IN ('pending', 'accepted')) DEFAULT 'accepted',
+    status TEXT NOT NULL CHECK (status IN ('pending', 'accepted')) DEFAULT 'pending',
     created_at TIMESTAMPTZ DEFAULT NOW(),
     UNIQUE(user_id, friend_id)
 );

@@ -32,7 +32,7 @@ export interface FriendEntry {
   prayed_today: number;
   habits_today: number;
   status: "pending" | "accepted";
-  is_sender: boolean;
+  is_sender: boolean; // true if current user sent request, false if received
 }
 
 /** Sync local today's progress and streak to Supabase profile */
@@ -105,7 +105,6 @@ export async function getMyProfile(user: User | { id: string; email?: string }):
       .maybeSingle();
 
     if (error || !data) {
-      // Try to insert if table exists
       try {
         const { data: newProf } = await supabase
           .from("profiles")
@@ -123,7 +122,6 @@ export async function getMyProfile(user: User | { id: string; email?: string }):
       return defaultProfile;
     }
 
-    // If server has a friend code, sync it to local store
     if (data.friend_code && data.friend_code !== storeCode) {
       useApp.getState().setUserFriendCode(data.friend_code);
     }
@@ -134,16 +132,15 @@ export async function getMyProfile(user: User | { id: string; email?: string }):
   }
 }
 
-/** Send friend request by 6-character friend code */
+/** Send Facebook-style friend request (status: 'pending') by unique friend code */
 export async function sendFriendRequest(
   currentUserId: string,
   friendCode: string
 ): Promise<{ success: boolean; message: string }> {
   const cleanCode = friendCode.trim().toUpperCase();
-  if (!cleanCode) return { success: false, message: "অনুগ্রহ করে একটি কোড দিন" };
+  if (!cleanCode) return { success: false, message: "অনুগ্রহ করে একটি কোড দিন (Please enter a code)" };
 
   try {
-    // Find friend profile
     const { data: friend, error: findErr } = await supabase
       .from("profiles")
       .select("id, name")
@@ -151,34 +148,81 @@ export async function sendFriendRequest(
       .maybeSingle();
 
     if (findErr || !friend) {
-      return { success: false, message: "এই কোড দিয়ে কোনো ফ্রেন্ড পাওয়া যায়নি! (No user with this code)" };
+      return { success: false, message: "এই কোড দিয়ে কোনো ব্যবহারকারী পাওয়া যায়নি! (User not found with this code)" };
     }
 
     if (friend.id === currentUserId) {
-      return { success: false, message: "এটি আপনার নিজের কোড! (Cannot add yourself)" };
+      return { success: false, message: "এটি আপনার নিজের কোড! (Cannot send request to yourself)" };
     }
 
-    // Insert friendship
+    // Check existing friendship/request in either direction
+    const { data: existing } = await supabase
+      .from("friendships")
+      .select("id, status, user_id")
+      .or(`and(user_id.eq.${currentUserId},friend_id.eq.${friend.id}),and(user_id.eq.${friend.id},friend_id.eq.${currentUserId})`)
+      .maybeSingle();
+
+    if (existing) {
+      if (existing.status === "accepted") {
+        return { success: false, message: "এই বন্ধু ইতিমধ্যে আপনার ফ্রেন্ড লিস্টে আছেন! (Already friends)" };
+      }
+      if (existing.user_id === currentUserId) {
+        return { success: false, message: "আপনি ইতিমধ্যে ফ্রেন্ড রিকোয়েস্ট পাঠিয়েছেন! (Request already sent)" };
+      }
+      return { success: false, message: "তিনি আপনাকে ইতিমধ্যে ফ্রেন্ড রিকোয়েস্ট পাঠিয়েছেন, অনুগ্রহ করে গ্রহণ করুন।" };
+    }
+
+    // Insert pending friend request
     const { error: insErr } = await supabase.from("friendships").insert({
       user_id: currentUserId,
       friend_id: friend.id,
-      status: "accepted",
+      status: "pending",
     });
 
     if (insErr) {
-      if (insErr.code === "23505") {
-        return { success: false, message: "এই বন্ধু ইতিমধ্যে আপনার তালিকায় আছেন!" };
-      }
       return { success: false, message: insErr.message };
     }
 
-    return { success: true, message: `${friend.name}-কে ফ্রেন্ড হিসেবে যুক্ত করা হয়েছে!` };
+    return {
+      success: true,
+      message: `${friend.name}-এর কাছে ফ্রেন্ড রিকোয়েস্ট পাঠানো হয়েছে! তিনি গ্রহণ করলেই ফ্রেন্ড লিস্ট ও লিডারবোর্ডে যুক্ত হবেন।`,
+    };
   } catch (err: unknown) {
-    return { success: false, message: err instanceof Error ? err.message : "Error adding friend" };
+    return { success: false, message: err instanceof Error ? err.message : "Error sending request" };
   }
 }
 
-/** Get list of accepted friends */
+/** Accept an incoming friend request */
+export async function acceptFriendRequest(friendshipId: string): Promise<{ success: boolean; message: string }> {
+  try {
+    const { error } = await supabase
+      .from("friendships")
+      .update({ status: "accepted" })
+      .eq("id", friendshipId);
+
+    if (error) throw error;
+    return { success: true, message: "ফ্রেন্ড রিকোয়েস্ট গ্রহণ করা হয়েছে!" };
+  } catch (err: unknown) {
+    return { success: false, message: err instanceof Error ? err.message : "Error accepting request" };
+  }
+}
+
+/** Reject or cancel a friend request / unfriend */
+export async function rejectFriendRequest(friendshipId: string): Promise<{ success: boolean; message: string }> {
+  try {
+    const { error } = await supabase
+      .from("friendships")
+      .delete()
+      .eq("id", friendshipId);
+
+    if (error) throw error;
+    return { success: true, message: "রিকোয়েস্ট বাতিল করা হয়েছে।" };
+  } catch (err: unknown) {
+    return { success: false, message: err instanceof Error ? err.message : "Error rejecting request" };
+  }
+}
+
+/** Get list of all relationships (accepted friends and pending requests) */
 export async function getFriendsList(currentUserId: string): Promise<FriendEntry[]> {
   try {
     const { data, error } = await supabase
@@ -206,7 +250,7 @@ export async function getFriendsList(currentUserId: string): Promise<FriendEntry
         streak: other?.streak || 0,
         prayed_today: other?.prayed_today || 0,
         habits_today: other?.habits_today || 0,
-        status: row.status,
+        status: row.status as "pending" | "accepted",
         is_sender: isSender,
       };
     });
@@ -215,18 +259,62 @@ export async function getFriendsList(currentUserId: string): Promise<FriendEntry
   }
 }
 
-/** Get top leaderboard */
+/**
+ * Get Leaderboard ONLY FOR ACCEPTED FRIENDS + CURRENT USER
+ * As requested: "leader board e sobar asbe na sudhu nijer friend der asbe"
+ */
 export async function getLeaderboard(currentUserId: string): Promise<DbProfile[]> {
   try {
-    const { data, error } = await supabase
+    // 1. Get current user's profile
+    const { data: myProfile } = await supabase
       .from("profiles")
       .select("*")
-      .order("streak", { ascending: false })
-      .order("prayed_today", { ascending: false })
-      .limit(20);
+      .eq("id", currentUserId)
+      .maybeSingle();
 
-    if (error || !data) return [];
-    return data as DbProfile[];
+    // 2. Get all accepted friends
+    const { data: friendships } = await supabase
+      .from("friendships")
+      .select("user_id, friend_id")
+      .eq("status", "accepted")
+      .or(`user_id.eq.${currentUserId},friend_id.eq.${currentUserId}`);
+
+    const friendIds = new Set<string>();
+    if (friendships) {
+      friendships.forEach((f) => {
+        if (f.user_id === currentUserId) friendIds.add(f.friend_id);
+        else friendIds.add(f.user_id);
+      });
+    }
+
+    let friendProfiles: DbProfile[] = [];
+    if (friendIds.size > 0) {
+      const { data: friendsData } = await supabase
+        .from("profiles")
+        .select("*")
+        .in("id", Array.from(friendIds));
+
+      if (friendsData) {
+        friendProfiles = friendsData as DbProfile[];
+      }
+    }
+
+    // Combine current user and accepted friends
+    const combined: DbProfile[] = [];
+    if (myProfile) combined.push(myProfile as DbProfile);
+    friendProfiles.forEach((fp) => {
+      if (!combined.some((c) => c.id === fp.id)) {
+        combined.push(fp);
+      }
+    });
+
+    // Sort by streak desc, then prayed_today desc
+    combined.sort((a, b) => {
+      if (b.streak !== a.streak) return b.streak - a.streak;
+      return b.prayed_today - a.prayed_today;
+    });
+
+    return combined;
   } catch {
     return [];
   }

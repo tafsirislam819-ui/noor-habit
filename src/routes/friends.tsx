@@ -1,6 +1,23 @@
 import { createFileRoute } from "@tanstack/react-router";
-import { useEffect, useState, useTransition } from "react";
-import { Trophy, Users, UserPlus, Copy, Check, LogOut, Flame, Sparkles, Share2, KeyRound, Mail, ArrowLeft, ShieldCheck } from "lucide-react";
+import { useEffect, useState, useMemo } from "react";
+import {
+  Trophy,
+  Users,
+  UserPlus,
+  UserCheck,
+  Copy,
+  Check,
+  LogOut,
+  Flame,
+  Sparkles,
+  Share2,
+  Mail,
+  ArrowLeft,
+  CheckCircle2,
+  XCircle,
+  Clock,
+  ShieldCheck,
+} from "lucide-react";
 import { useT } from "@/lib/i18n";
 import { useApp } from "@/lib/store";
 import {
@@ -9,6 +26,8 @@ import {
   getFriendsList,
   getLeaderboard,
   sendFriendRequest,
+  acceptFriendRequest,
+  rejectFriendRequest,
   syncStatsToCloud,
   type DbProfile,
   type FriendEntry,
@@ -30,8 +49,10 @@ export const Route = createFileRoute("/friends")({
 
 function FriendsPage() {
   const t = useT();
-  const { profile, prayers, items, authUser, setAuthUser, userFriendCode, setUserFriendCode } = useApp();
-  const [tab, setTab] = useState<"leaderboard" | "friends" | "add">("leaderboard");
+  const { profile, prayers, items, authUser, setAuthUser, userFriendCode, setUserFriendCode, lang } = useApp();
+  const isBn = lang === "bn";
+
+  const [tab, setTab] = useState<"leaderboard" | "friends" | "requests" | "add">("leaderboard");
 
   // Auth Modes: login | signup | verify_otp | forgot_password
   const [authMode, setAuthMode] = useState<"login" | "signup" | "verify_otp" | "forgot_password">("login");
@@ -46,12 +67,12 @@ function FriendsPage() {
 
   // Friends Data
   const [myDbProfile, setMyDbProfile] = useState<DbProfile | null>(null);
-  const [friends, setFriends] = useState<FriendEntry[]>([]);
+  const [relationships, setRelationships] = useState<FriendEntry[]>([]);
   const [leaderboard, setLeaderboard] = useState<DbProfile[]>([]);
   const [inputCode, setInputCode] = useState("");
   const [addMsg, setAddMsg] = useState<{ text: string; ok: boolean } | null>(null);
+  const [actionBusyId, setActionBusyId] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
-  const [, startTransition] = useTransition();
 
   // 1. Initial Session Load
   useEffect(() => {
@@ -71,7 +92,6 @@ function FriendsPage() {
         setAuthUser({ id: u.id, email: u.email || "", name });
         loadData(u);
       } else {
-        // Only reset if user explicitly signed out
         if (_event === "SIGNED_OUT") {
           setAuthUser(null);
         }
@@ -97,7 +117,7 @@ function FriendsPage() {
 
     await syncStatsToCloud(u, profile?.name || "", prayers, items, st);
 
-    const [p, fr, lb] = await Promise.all([
+    const [p, allRel, lb] = await Promise.all([
       getMyProfile(u),
       getFriendsList(u.id),
       getLeaderboard(u.id),
@@ -107,7 +127,7 @@ function FriendsPage() {
     if (p.friend_code) {
       setUserFriendCode(p.friend_code);
     }
-    setFriends(fr);
+    setRelationships(allRel);
     setLeaderboard(lb);
   };
 
@@ -116,6 +136,19 @@ function FriendsPage() {
       loadData(authUser);
     }
   }, [authUser?.id]);
+
+  // Filter accepted friends and requests
+  const acceptedFriends = useMemo(() => {
+    return relationships.filter((r) => r.status === "accepted");
+  }, [relationships]);
+
+  const incomingRequests = useMemo(() => {
+    return relationships.filter((r) => r.status === "pending" && !r.is_sender);
+  }, [relationships]);
+
+  const outgoingRequests = useMemo(() => {
+    return relationships.filter((r) => r.status === "pending" && r.is_sender);
+  }, [relationships]);
 
   // Handle Login & Signup Submit
   const handleAuth = async (e: React.FormEvent) => {
@@ -127,7 +160,7 @@ function FriendsPage() {
 
     try {
       if (authMode === "signup") {
-        if (!password.trim()) throw new Error("পাসওয়ার্ড দিন (Password required)");
+        if (!password.trim()) throw new Error(isBn ? "পাসওয়ার্ড দিন" : "Password is required");
         const displayName = nameInput.trim() || profile?.name || "Muslim Friend";
         const { data, error } = await supabase.auth.signUp({
           email: email.trim(),
@@ -138,10 +171,13 @@ function FriendsPage() {
         });
         if (error) throw error;
 
-        // If email confirmation OTP is needed
         if (data.user && !data.session) {
           setAuthMode("verify_otp");
-          setAuthSuccess(`আপনার ইমেইলে (${email}) একটি ভেরিফিকেশন কোড পাঠানো হয়েছে। কোডটি নিচে দিন।`);
+          setAuthSuccess(
+            isBn
+              ? `আপনার ইমেইলে (${email}) একটি ভেরিফিকেশন কোড পাঠানো হয়েছে। কোডটি নিচে দিন।`
+              : `A verification code was sent to ${email}. Please enter the code below.`
+          );
           return;
         }
 
@@ -151,10 +187,10 @@ function FriendsPage() {
             email: data.user.email || "",
             name: displayName,
           });
-          setAuthSuccess("অ্যাকাউন্ট সফলভাবে তৈরি হয়েছে!");
+          setAuthSuccess(isBn ? "অ্যাকাউন্ট সফলভাবে তৈরি হয়েছে!" : "Account successfully created!");
         }
       } else if (authMode === "login") {
-        if (!password.trim()) throw new Error("পাসওয়ার্ড দিন (Password required)");
+        if (!password.trim()) throw new Error(isBn ? "পাসওয়ার্ড দিন" : "Password is required");
         const { data, error } = await supabase.auth.signInWithPassword({
           email: email.trim(),
           password: password.trim(),
@@ -163,7 +199,11 @@ function FriendsPage() {
         if (error) {
           if (error.message.toLowerCase().includes("email not confirmed")) {
             setAuthMode("verify_otp");
-            setAuthError("আপনার ইমেইল এখনও নিশ্চিত করা হয়নি। ইমেইলের কোডটি নিচে দিন।");
+            setAuthError(
+              isBn
+                ? "আপনার ইমেইল এখনও নিশ্চিত করা হয়নি। ইমেইলের কোডটি নিচে দিন।"
+                : "Your email is not confirmed yet. Enter the OTP code sent to your email."
+            );
             return;
           }
           throw error;
@@ -202,7 +242,6 @@ function FriendsPage() {
       });
 
       if (error) {
-        // Try email recovery type if signup failed
         const res2 = await supabase.auth.verifyOtp({
           email: email.trim(),
           token: otpCode.trim(),
@@ -215,7 +254,7 @@ function FriendsPage() {
             email: res2.data.user.email || "",
             name: res2.data.user.user_metadata?.name || "Friend",
           });
-          setAuthSuccess("ইমেইল সফলভাবে নিশ্চিত করা হয়েছে!");
+          setAuthSuccess(isBn ? "ইমেইল সফলভাবে নিশ্চিত করা হয়েছে!" : "Email successfully verified!");
           return;
         }
       }
@@ -226,10 +265,10 @@ function FriendsPage() {
           email: data.user.email || "",
           name: data.user.user_metadata?.name || "Friend",
         });
-        setAuthSuccess("ইমেইল সফলভাবে নিশ্চিত করা হয়েছে!");
+        setAuthSuccess(isBn ? "ইমেইল সফলভাবে নিশ্চিত করা হয়েছে!" : "Email successfully verified!");
       }
     } catch (err: unknown) {
-      setAuthError(err instanceof Error ? err.message : "ভেরিফিকেশন কোডটি সঠিক নয়");
+      setAuthError(err instanceof Error ? err.message : isBn ? "ভেরিফিকেশন কোডটি সঠিক নয়" : "Invalid code");
     } finally {
       setAuthBusy(false);
     }
@@ -245,13 +284,15 @@ function FriendsPage() {
 
     try {
       if (!otpCode.trim()) {
-        // Step 1: Send recovery email
         const { error } = await supabase.auth.resetPasswordForEmail(email.trim());
         if (error) throw error;
-        setAuthSuccess("আপনার ইমেইলে পাসওয়ার্ড রিসেট কোড পাঠানো হয়েছে! কোড ও নতুন পাসওয়ার্ড দিন।");
+        setAuthSuccess(
+          isBn
+            ? "আপনার ইমেইলে পাসওয়ার্ড রিসেট কোড পাঠানো হয়েছে! কোড ও নতুন পাসওয়ার্ড দিন।"
+            : "Password reset code sent to your email! Enter the code and your new password."
+        );
       } else {
-        // Step 2: Verify OTP and update password
-        if (!newPassword.trim()) throw new Error("নতুন পাসওয়ার্ড দিন");
+        if (!newPassword.trim()) throw new Error(isBn ? "নতুন পাসওয়ার্ড দিন" : "Enter new password");
         const { error: otpErr } = await supabase.auth.verifyOtp({
           email: email.trim(),
           token: otpCode.trim(),
@@ -270,11 +311,11 @@ function FriendsPage() {
             email: data.user.email || "",
             name: data.user.user_metadata?.name || "Friend",
           });
-          setAuthSuccess("পাসওয়ার্ড সফলভাবে পরিবর্তন করা হয়েছে!");
+          setAuthSuccess(isBn ? "পাসওয়ার্ড সফলভাবে পরিবর্তন করা হয়েছে!" : "Password successfully updated!");
         }
       }
     } catch (err: unknown) {
-      setAuthError(err instanceof Error ? err.message : "পাসওয়ার্ড রিসেট ব্যর্থ হয়েছে");
+      setAuthError(err instanceof Error ? err.message : isBn ? "পাসওয়ার্ড রিসেট ব্যর্থ হয়েছে" : "Reset failed");
     } finally {
       setAuthBusy(false);
     }
@@ -296,6 +337,22 @@ function FriendsPage() {
     }
   };
 
+  const handleAcceptRequest = async (relId: string) => {
+    if (!authUser) return;
+    setActionBusyId(relId);
+    await acceptFriendRequest(relId);
+    await loadData(authUser);
+    setActionBusyId(null);
+  };
+
+  const handleRejectRequest = async (relId: string) => {
+    if (!authUser) return;
+    setActionBusyId(relId);
+    await rejectFriendRequest(relId);
+    await loadData(authUser);
+    setActionBusyId(null);
+  };
+
   const currentFriendCode = myDbProfile?.friend_code || userFriendCode;
 
   const copyFriendCode = () => {
@@ -307,7 +364,9 @@ function FriendsPage() {
 
   const shareFriendCode = () => {
     if (!currentFriendCode) return;
-    const shareText = `আসসালামু আলাইকুম! নূর হ্যাবিট অ্যাপে আমার সাথে যুক্ত হতে আমার ফ্রেন্ড কোড ব্যবহার করুন: ${currentFriendCode}`;
+    const shareText = isBn
+      ? `আসসালামু আলাইকুম! নূর হ্যাবিট অ্যাপে আমার সাথে যুক্ত হতে আমার ফ্রেন্ড কোড ব্যবহার করুন: ${currentFriendCode}`
+      : `Assalamu alaikum! Connect with me on Noor Habit using my friend code: ${currentFriendCode}`;
     if (navigator.share) {
       navigator.share({ title: "Noor Habit Friend Code", text: shareText }).catch(() => {});
     } else {
@@ -364,7 +423,7 @@ function FriendsPage() {
                     required
                     value={nameInput}
                     onChange={(e) => setNameInput(e.target.value)}
-                    placeholder={profile?.name || "আপনার নাম"}
+                    placeholder={profile?.name || (isBn ? "আপনার নাম" : "Your Name")}
                     className="input mt-1"
                   />
                 </div>
@@ -401,7 +460,7 @@ function FriendsPage() {
                     onClick={() => { setAuthMode("forgot_password"); setAuthError(""); setAuthSuccess(""); }}
                     className="text-xs text-primary hover:underline"
                   >
-                    পাসওয়ার্ড ভুলে গেছেন? (Forgot Password?)
+                    {isBn ? "পাসওয়ার্ড ভুলে গেছেন?" : "Forgot Password?"}
                   </button>
                 </div>
               )}
@@ -411,7 +470,7 @@ function FriendsPage() {
                 disabled={authBusy}
                 className="mt-2 rounded-xl bg-primary py-3 font-semibold text-primary-foreground disabled:opacity-50 transition"
               >
-                {authBusy ? "অপেক্ষা করুন..." : authMode === "signup" ? t("createAccount") : t("login")}
+                {authBusy ? (isBn ? "অপেক্ষা করুন..." : "Please wait...") : authMode === "signup" ? t("createAccount") : t("login")}
               </button>
             </form>
           )}
@@ -427,14 +486,16 @@ function FriendsPage() {
                 >
                   <ArrowLeft className="size-4" />
                 </button>
-                <h2 className="text-base font-semibold">ইমেইল ভেরিফিকেশন কোড</h2>
+                <h2 className="text-base font-semibold">
+                  {isBn ? "ইমেইল ভেরিফিকেশন কোড" : "Email Verification Code"}
+                </h2>
               </div>
               <p className="text-xs text-muted-foreground">
-                আপনার ইমেইলে পাঠানো ৬ ডিজিটের কোডটি দিন।
+                {isBn ? "আপনার ইমেইলে পাঠানো ৬ ডিজিটের কোডটি দিন।" : "Enter the 6-digit code sent to your email."}
               </p>
 
               <div>
-                <label className="text-xs text-muted-foreground">ভেরিফিকেশন কোড (OTP Token)</label>
+                <label className="text-xs text-muted-foreground">{isBn ? "ভেরিফিকেশন কোড" : "Verification Code"}</label>
                 <input
                   type="text"
                   required
@@ -451,18 +512,18 @@ function FriendsPage() {
                 disabled={authBusy || !otpCode.trim()}
                 className="rounded-xl bg-primary py-3 font-semibold text-primary-foreground disabled:opacity-50 transition"
               >
-                {authBusy ? "যাচাই করা হচ্ছে..." : "কোড নিশ্চিত করুন ও প্রবেশ করুন"}
+                {authBusy ? (isBn ? "যাচাই করা হচ্ছে..." : "Verifying...") : isBn ? "কোড নিশ্চিত করুন ও প্রবেশ করুন" : "Confirm Code & Continue"}
               </button>
 
               <button
                 type="button"
                 onClick={() => {
                   supabase.auth.resend({ type: "signup", email: email.trim() });
-                  setAuthSuccess("নতুন ভেরিফিকেশন কোড পাঠানো হয়েছে!");
+                  setAuthSuccess(isBn ? "নতুন ভেরিফিকেশন কোড পাঠানো হয়েছে!" : "New verification code sent!");
                 }}
                 className="text-xs text-center text-primary hover:underline"
               >
-                কোড পাননি? পুনরায় কোড পাঠান
+                {isBn ? "কোড পাননি? পুনরায় কোড পাঠান" : "Didn't receive code? Resend"}
               </button>
             </form>
           )}
@@ -478,7 +539,7 @@ function FriendsPage() {
                 >
                   <ArrowLeft className="size-4" />
                 </button>
-                <h2 className="text-base font-semibold">পাসওয়ার্ড পুনরুদ্ধার</h2>
+                <h2 className="text-base font-semibold">{isBn ? "পাসওয়ার্ড পুনরুদ্ধার" : "Reset Password"}</h2>
               </div>
 
               <div>
@@ -496,7 +557,7 @@ function FriendsPage() {
               {authSuccess && (
                 <>
                   <div>
-                    <label className="text-xs text-muted-foreground">ইমেইলের ৬ ডিজিট কোড</label>
+                    <label className="text-xs text-muted-foreground">{isBn ? "ইমেইলের ৬ ডিজিট কোড" : "6-digit OTP from email"}</label>
                     <input
                       type="text"
                       required
@@ -507,7 +568,7 @@ function FriendsPage() {
                     />
                   </div>
                   <div>
-                    <label className="text-xs text-muted-foreground">নতুন পাসওয়ার্ড</label>
+                    <label className="text-xs text-muted-foreground">{isBn ? "নতুন পাসওয়ার্ড" : "New Password"}</label>
                     <input
                       type="password"
                       required
@@ -526,10 +587,10 @@ function FriendsPage() {
                 className="rounded-xl bg-primary py-3 font-semibold text-primary-foreground disabled:opacity-50 transition"
               >
                 {authBusy
-                  ? "অপেক্ষা করুন..."
+                  ? (isBn ? "অপেক্ষা করুন..." : "Please wait...")
                   : authSuccess
-                  ? "পাসওয়ার্ড নিশ্চিত করুন ও লগইন করুন"
-                  : "ভেরিফিকেশন কোড পাঠান"}
+                  ? (isBn ? "পাসওয়ার্ড নিশ্চিত করুন ও লগইন করুন" : "Confirm Password & Login")
+                  : (isBn ? "ভেরিফিকেশন কোড পাঠান" : "Send Verification Code")}
               </button>
             </form>
           )}
@@ -550,7 +611,7 @@ function FriendsPage() {
         </div>
         <button
           onClick={handleLogout}
-          title="লগআউট"
+          title={isBn ? "লগআউট" : "Logout"}
           className="flex items-center gap-1.5 rounded-xl border border-destructive/30 px-3 py-1.5 text-xs text-destructive hover:bg-destructive/10 transition"
         >
           <LogOut className="size-3.5" />
@@ -564,7 +625,7 @@ function FriendsPage() {
           <div>
             <span className="inline-flex items-center gap-1 text-xs font-medium text-primary">
               <Sparkles className="size-3.5" />
-              আপনার অনন্য ফ্রেন্ড কোড (Your Unique Code)
+              {isBn ? "আপনার অনন্য ফ্রেন্ড কোড (Your Unique Code)" : "Your Unique Friend Code"}
             </span>
             <div className="mt-2 flex items-center gap-3">
               <span className="font-mono text-2xl sm:text-3xl font-extrabold tracking-wider text-foreground select-all">
@@ -572,7 +633,9 @@ function FriendsPage() {
               </span>
             </div>
             <p className="mt-1 text-xs text-muted-foreground">
-              বন্ধুদের এই কোডটি দিন। তারা আপনাকে ফ্রেন্ড লিস্টে যুক্ত করতে পারবে।
+              {isBn
+                ? "বন্ধুদের এই কোডটি দিন। তারা ফ্রেন্ড রিকোয়েস্ট পাঠাতে পারবে।"
+                : "Give this code to friends. They can send you a friend request."}
             </p>
           </div>
 
@@ -582,45 +645,63 @@ function FriendsPage() {
               className="flex items-center gap-1.5 rounded-xl bg-primary px-4 py-2.5 text-xs font-semibold text-primary-foreground shadow transition hover:opacity-90"
             >
               {copied ? <Check className="size-4" /> : <Copy className="size-4" />}
-              {copied ? "কপি হয়েছে!" : "কোড কপি"}
+              {copied ? (isBn ? "কপি হয়েছে!" : "Copied!") : isBn ? "কোড কপি" : "Copy Code"}
             </button>
             <button
               onClick={shareFriendCode}
               className="flex items-center gap-1.5 rounded-xl bg-secondary px-3.5 py-2.5 text-xs font-semibold text-secondary-foreground hover:bg-muted transition"
             >
               <Share2 className="size-4" />
-              শেয়ার
+              {isBn ? "শেয়ার" : "Share"}
             </button>
           </div>
         </div>
       </section>
 
-      {/* TABS */}
-      <div className="glass flex p-1.5">
+      {/* TABS (LEADERBOARD, FRIENDS, REQUESTS, ADD FRIEND) */}
+      <div className="glass flex p-1.5 overflow-x-auto no-scrollbar">
         <button
           onClick={() => setTab("leaderboard")}
           className={cn(
-            "flex flex-1 items-center justify-center gap-1.5 rounded-xl py-2 text-xs font-semibold transition",
+            "flex flex-1 min-w-[7rem] items-center justify-center gap-1.5 rounded-xl py-2 text-xs font-semibold transition",
             tab === "leaderboard" ? "glow-on" : "text-muted-foreground"
           )}
         >
           <Trophy className="size-4" />
           {t("leaderboard")}
         </button>
+
         <button
           onClick={() => setTab("friends")}
           className={cn(
-            "flex flex-1 items-center justify-center gap-1.5 rounded-xl py-2 text-xs font-semibold transition",
+            "flex flex-1 min-w-[7rem] items-center justify-center gap-1.5 rounded-xl py-2 text-xs font-semibold transition",
             tab === "friends" ? "glow-on" : "text-muted-foreground"
           )}
         >
           <Users className="size-4" />
-          {t("myFriends")} ({friends.length})
+          {isBn ? `বন্ধুরা (${acceptedFriends.length})` : `Friends (${acceptedFriends.length})`}
         </button>
+
+        <button
+          onClick={() => setTab("requests")}
+          className={cn(
+            "relative flex flex-1 min-w-[7.5rem] items-center justify-center gap-1.5 rounded-xl py-2 text-xs font-semibold transition",
+            tab === "requests" ? "glow-on" : "text-muted-foreground"
+          )}
+        >
+          <UserCheck className="size-4" />
+          <span>{isBn ? "রিকোয়েস্ট" : "Requests"}</span>
+          {incomingRequests.length > 0 && (
+            <span className="grid size-4 place-items-center rounded-full bg-destructive text-[10px] font-bold text-white">
+              {incomingRequests.length}
+            </span>
+          )}
+        </button>
+
         <button
           onClick={() => setTab("add")}
           className={cn(
-            "flex flex-1 items-center justify-center gap-1.5 rounded-xl py-2 text-xs font-semibold transition",
+            "flex flex-1 min-w-[7rem] items-center justify-center gap-1.5 rounded-xl py-2 text-xs font-semibold transition",
             tab === "add" ? "glow-on" : "text-muted-foreground"
           )}
         >
@@ -629,13 +710,22 @@ function FriendsPage() {
         </button>
       </div>
 
-      {/* TAB CONTENT: LEADERBOARD */}
+      {/* TAB CONTENT: LEADERBOARD (ONLY ACCEPTED FRIENDS + CURRENT USER) */}
       {tab === "leaderboard" && (
         <section className="flex flex-col gap-3">
+          <div className="flex items-center justify-between text-xs text-muted-foreground px-1">
+            <span>{isBn ? "🏆 শুধুমাত্র আপনার ও ফ্রেন্ডদের র‍্যাংকিং" : "🏆 Ranking for you and your accepted friends"}</span>
+            <span>{isBn ? `মোট: ${leaderboard.length} জন` : `Total: ${leaderboard.length}`}</span>
+          </div>
+
           {leaderboard.length === 0 ? (
             <div className="glass p-8 text-center text-sm text-muted-foreground">
               <Trophy className="mx-auto mb-2 size-8 text-warning/60" />
-              <p>লিডারবোর্ডে এখনও কোনো স্কোর নেই। নামাজ ও অভ্যাস পূরণ করে সবার আগে থাকুন!</p>
+              <p>
+                {isBn
+                  ? "লিডারবোর্ডে এখনও কোনো স্কোর নেই। নামাজ ও অভ্যাস পূরণ করে সবার আগে থাকুন!"
+                  : "No scores on leaderboard yet. Complete prayers and habits to take the lead!"}
+              </p>
             </div>
           ) : (
             leaderboard.map((item, idx) => {
@@ -666,7 +756,7 @@ function FriendsPage() {
                     <div>
                       <div className="flex items-center gap-2">
                         <span className="font-semibold text-sm">
-                          {item.name} {isMe && "(আপনি)"}
+                          {item.name} {isMe && (isBn ? "(আপনি)" : "(You)")}
                         </span>
                         {isMe && (
                           <span className="rounded bg-primary/20 px-1.5 py-0.5 text-[10px] text-primary">
@@ -675,14 +765,19 @@ function FriendsPage() {
                         )}
                       </div>
                       <span className="text-xs text-muted-foreground">
-                        আজকে নামাজ: {item.prayed_today}/৫
+                        {isBn ? `আজকে নামাজ: ${item.prayed_today}/৫` : `Prayers today: ${item.prayed_today}/5`}
                       </span>
                     </div>
                   </div>
 
-                  <div className="flex items-center gap-1.5 font-bold text-warning text-sm">
-                    <Flame className="size-4 fill-warning" />
-                    <span>{item.streak} দিন</span>
+                  <div className="flex items-center gap-3 text-right">
+                    <div>
+                      <div className="flex items-center justify-end gap-1 font-bold text-warning">
+                        <Flame className="size-4 fill-warning" />
+                        <span>{item.streak}</span>
+                      </div>
+                      <span className="text-[10px] text-muted-foreground">{t("streak")}</span>
+                    </div>
                   </div>
                 </div>
               );
@@ -691,33 +786,43 @@ function FriendsPage() {
         </section>
       )}
 
-      {/* TAB CONTENT: MY FRIENDS */}
+      {/* TAB CONTENT: MY FRIENDS (ACCEPTED ONLY) */}
       {tab === "friends" && (
         <section className="flex flex-col gap-3">
-          {friends.length === 0 ? (
+          {acceptedFriends.length === 0 ? (
             <div className="glass p-8 text-center text-sm text-muted-foreground">
-              <Users className="mx-auto mb-2 size-8 opacity-40" />
-              <p>আপনার তালিকায় এখনও কোনো বন্ধু নেই।</p>
+              <Users className="mx-auto mb-2 size-8 text-muted-foreground/60" />
+              <p>{isBn ? "এখনও কোনো ফ্রেন্ড যুক্ত করেননি।" : "You have not added any friends yet."}</p>
               <button
                 onClick={() => setTab("add")}
-                className="mt-3 inline-flex items-center gap-1 text-xs text-primary underline"
+                className="mt-3 inline-flex items-center gap-1.5 rounded-xl bg-primary px-4 py-2 text-xs font-semibold text-primary-foreground"
               >
-                বন্ধুর কোড দিয়ে যুক্ত করুন
+                <UserPlus className="size-4" />
+                {t("addFriend")}
               </button>
             </div>
           ) : (
-            friends.map((fr) => (
-              <div key={fr.friendship_id} className="glass flex items-center justify-between p-4">
+            acceptedFriends.map((f) => (
+              <div key={f.friendship_id} className="glass flex items-center justify-between p-4">
                 <div>
-                  <h3 className="font-semibold text-sm">{fr.name}</h3>
-                  <p className="text-xs text-muted-foreground font-mono">{fr.friend_code}</p>
-                  <p className="mt-1 text-xs text-muted-foreground">
-                    আজকের নামাজ: {fr.prayed_today}/৫ • অভ্যাস: {fr.habits_today}টি
+                  <p className="font-semibold text-sm text-foreground">{f.name}</p>
+                  <p className="text-xs text-muted-foreground">
+                    {isBn ? "কোড:" : "Code:"} <span className="font-mono">{f.friend_code}</span> • {isBn ? `নামাজ: ${f.prayed_today}/৫` : `Prayers: ${f.prayed_today}/5`}
                   </p>
                 </div>
-                <div className="flex items-center gap-1 text-sm font-bold text-warning">
-                  <Flame className="size-4 fill-warning" />
-                  <span>{fr.streak} দিন</span>
+                <div className="flex items-center gap-2">
+                  <div className="flex items-center gap-1 font-bold text-warning text-xs">
+                    <Flame className="size-4 fill-warning" />
+                    <span>{f.streak}</span>
+                  </div>
+                  <button
+                    disabled={actionBusyId === f.friendship_id}
+                    onClick={() => handleRejectRequest(f.friendship_id)}
+                    className="ml-2 text-xs text-muted-foreground hover:text-destructive px-2 py-1 rounded transition"
+                    title={isBn ? "আনফ্রেন্ড" : "Unfriend"}
+                  >
+                    {isBn ? "আনফ্রেন্ড" : "Remove"}
+                  </button>
                 </div>
               </div>
             ))
@@ -725,35 +830,128 @@ function FriendsPage() {
         </section>
       )}
 
+      {/* TAB CONTENT: REQUESTS (FACEBOOK STYLE INCOMING & OUTGOING) */}
+      {tab === "requests" && (
+        <section className="flex flex-col gap-5">
+          {/* Incoming Requests */}
+          <div>
+            <h3 className="text-xs font-bold text-muted-foreground uppercase tracking-wider mb-2 flex items-center gap-1.5">
+              <UserCheck className="size-4 text-primary" />
+              {isBn ? `ইনকামিং ফ্রেন্ড রিকোয়েস্ট (${incomingRequests.length})` : `Incoming Requests (${incomingRequests.length})`}
+            </h3>
+
+            {incomingRequests.length === 0 ? (
+              <div className="glass p-5 text-center text-xs text-muted-foreground">
+                {isBn ? "কোনো নতুন ফ্রেন্ড রিকোয়েস্ট নেই।" : "No pending incoming requests."}
+              </div>
+            ) : (
+              <div className="space-y-2">
+                {incomingRequests.map((req) => (
+                  <div key={req.friendship_id} className="glass flex flex-col sm:flex-row sm:items-center justify-between gap-3 p-4">
+                    <div>
+                      <p className="font-semibold text-sm">{req.name}</p>
+                      <p className="text-xs text-muted-foreground">
+                        {isBn ? "ফ্রেন্ড কোড:" : "Friend code:"} <span className="font-mono">{req.friend_code}</span>
+                      </p>
+                    </div>
+
+                    <div className="flex items-center gap-2">
+                      <button
+                        disabled={actionBusyId === req.friendship_id}
+                        onClick={() => handleAcceptRequest(req.friendship_id)}
+                        className="flex-1 sm:flex-none flex items-center justify-center gap-1 rounded-xl bg-primary px-3.5 py-1.5 text-xs font-semibold text-primary-foreground transition hover:opacity-90 disabled:opacity-50"
+                      >
+                        <CheckCircle2 className="size-3.5" />
+                        {isBn ? "গ্রহণ করুন (Accept)" : "Accept"}
+                      </button>
+                      <button
+                        disabled={actionBusyId === req.friendship_id}
+                        onClick={() => handleRejectRequest(req.friendship_id)}
+                        className="flex-1 sm:flex-none flex items-center justify-center gap-1 rounded-xl bg-destructive/10 border border-destructive/30 px-3.5 py-1.5 text-xs font-semibold text-destructive hover:bg-destructive/20 transition disabled:opacity-50"
+                      >
+                        <XCircle className="size-3.5" />
+                        {isBn ? "বাতিল (Decline)" : "Decline"}
+                      </button>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+
+          {/* Outgoing Requests */}
+          {outgoingRequests.length > 0 && (
+            <div>
+              <h3 className="text-xs font-bold text-muted-foreground uppercase tracking-wider mb-2 flex items-center gap-1.5">
+                <Clock className="size-4 text-warning" />
+                {isBn ? `পাঠানো রিকোয়েস্ট (${outgoingRequests.length})` : `Sent Requests (${outgoingRequests.length})`}
+              </h3>
+              <div className="space-y-2">
+                {outgoingRequests.map((req) => (
+                  <div key={req.friendship_id} className="glass flex items-center justify-between p-3.5">
+                    <div>
+                      <p className="font-semibold text-xs text-foreground">{req.name}</p>
+                      <p className="text-[10px] text-muted-foreground font-mono">{req.friend_code}</p>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <span className="rounded-full bg-warning/15 px-2 py-0.5 text-[10px] font-semibold text-warning">
+                        {isBn ? "অপেক্ষমাণ (Pending)" : "Pending"}
+                      </span>
+                      <button
+                        onClick={() => handleRejectRequest(req.friendship_id)}
+                        className="text-xs text-muted-foreground hover:text-destructive p-1"
+                        title={isBn ? "রিকোয়েস্ট বাতিল" : "Cancel Request"}
+                      >
+                        <XCircle className="size-4" />
+                      </button>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+        </section>
+      )}
+
       {/* TAB CONTENT: ADD FRIEND */}
       {tab === "add" && (
-        <section className="glass p-6">
-          <h2 className="text-lg font-bold">বন্ধুর কোড দিয়ে যুক্ত করুন</h2>
+        <section className="glass p-5">
+          <h2 className="text-base font-bold">{t("enterFriendCode")}</h2>
           <p className="mt-1 text-xs text-muted-foreground">
-            আপনার বন্ধুর Noor Habit প্রোফাইলের ৬ ডিজিটের ফ্রেন্ড কোডটি লিখুন।
+            {isBn
+              ? "বন্ধুর ৬ ডিজিটের কোড দিয়ে রিকোয়েস্ট পাঠান। তিনি গ্রহণ করলেই আপনারা বন্ধু তালিকায় যুক্ত হবেন।"
+              : "Enter your friend's 6-character code to send a friend request. Once they accept, you'll be connected."}
           </p>
 
-          <form onSubmit={handleAddFriend} className="mt-4 flex flex-col sm:flex-row gap-3">
+          <form onSubmit={handleAddFriend} className="mt-4 flex flex-col gap-3">
             <input
               type="text"
-              required
+              maxLength={6}
               value={inputCode}
               onChange={(e) => setInputCode(e.target.value.toUpperCase())}
-              placeholder="NOOR-XXXXXX"
-              className="input flex-1 font-mono text-base uppercase tracking-wider"
+              placeholder={t("friendCodePlaceholder")}
+              className="input font-mono text-center text-lg uppercase tracking-widest font-bold"
             />
             <button
               type="submit"
-              className="rounded-xl bg-primary px-6 py-3 font-semibold text-primary-foreground hover:opacity-90 transition shrink-0"
+              disabled={!inputCode.trim()}
+              className="rounded-xl bg-primary py-3 font-semibold text-primary-foreground disabled:opacity-40 transition"
             >
-              যুক্ত করুন
+              {isBn ? "ফ্রেন্ড রিকোয়েস্ট পাঠান (Send Request)" : "Send Friend Request"}
             </button>
           </form>
 
           {addMsg && (
-            <p className={cn("mt-3 text-xs font-medium", addMsg.ok ? "text-success" : "text-destructive")}>
+            <div
+              className={cn(
+                "mt-4 rounded-xl border p-3 text-xs leading-relaxed",
+                addMsg.ok
+                  ? "border-success/40 bg-success/10 text-success"
+                  : "border-destructive/40 bg-destructive/10 text-destructive"
+              )}
+            >
               {addMsg.text}
-            </p>
+            </div>
           )}
         </section>
       )}

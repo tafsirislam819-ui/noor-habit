@@ -1,5 +1,5 @@
 import { Capacitor } from "@capacitor/core";
-import type { Item, Prayer } from "./store";
+import { useApp, type Item, type Prayer } from "./store";
 
 export const isNative = () => typeof window !== "undefined" && Capacitor.isNativePlatform();
 
@@ -60,9 +60,14 @@ export async function syncNativeSchedules(
 
     if (!enabled) return;
 
+    // Filter strictly to items that HAVE a non-empty time
     const list: { id: string; title: string; time: string; mode: string }[] = [
-      ...prayers.map((p) => ({ id: "p-" + p.key, title: label(p.key), time: p.time, mode: p.notify })),
-      ...items.filter((i) => i.time).map((i) => ({ id: i.id, title: i.title, time: i.time, mode: i.notify })),
+      ...prayers
+        .filter((p) => p.time && p.time.trim() !== "")
+        .map((p) => ({ id: "p-" + p.key, title: label(p.key), time: p.time, mode: p.notify })),
+      ...items
+        .filter((i) => i.time && i.time.trim() !== "")
+        .map((i) => ({ id: i.id, title: i.title, time: i.time, mode: i.notify })),
     ];
 
     const notifications: Parameters<typeof LocalNotifications.schedule>[0]["notifications"] = [];
@@ -73,16 +78,13 @@ export async function syncNativeSchedules(
       const [h = 0, m = 0] = e.time.split(":").map(Number);
       const baseId = hash(e.id) * 10;
 
-      // Calculate next trigger time
       const target = new Date();
       target.setHours(h, m, 0, 0);
 
-      // If already passed today or done today, schedule for tomorrow
       if (target.getTime() <= now || doneToday(e.id)) {
         target.setDate(target.getDate() + 1);
       }
 
-      // 1. Primary reminder
       notifications.push({
         id: baseId,
         title: e.title,
@@ -91,7 +93,6 @@ export async function syncNativeSchedules(
         sound: "beep.wav",
       });
 
-      // 2. If aggressive mode, add at most ONE follow-up 10 minutes later if unconfirmed
       if (e.mode === "aggressive") {
         const followUp = new Date(target.getTime() + 10 * 60000);
         notifications.push({
@@ -111,42 +112,123 @@ export async function syncNativeSchedules(
   }
 }
 
-let ctx: AudioContext | null = null;
-let timer: ReturnType<typeof setInterval> | null = null;
+let audioCtx: AudioContext | null = null;
+let alarmTimer: ReturnType<typeof setInterval> | null = null;
 
-export function startAlarmSound() {
-  stopAlarmSound();
+function getAudioContext() {
+  if (!audioCtx || audioCtx.state === "closed") {
+    const AudioContextClass = window.AudioContext || (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext;
+    if (AudioContextClass) audioCtx = new AudioContextClass();
+  }
+  if (audioCtx && audioCtx.state === "suspended") {
+    audioCtx.resume().catch(() => {});
+  }
+  return audioCtx;
+}
+
+/** Play a single tone preview or single reminder ping */
+export function playTone(tone: string) {
   try {
-    ctx = new AudioContext();
-    let count = 0;
-    const beep = () => {
-      if (!ctx) return;
-      count++;
-      if (count > 5) {
-        // Stop automatically after 5 beeps to avoid annoying the user
-        stopAlarmSound();
-        return;
-      }
-      const o = ctx.createOscillator();
-      const g = ctx.createGain();
-      o.frequency.value = 880;
-      g.gain.setValueAtTime(0.2, ctx.currentTime);
-      g.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.4);
-      o.connect(g).connect(ctx.destination);
-      o.start();
-      o.stop(ctx.currentTime + 0.4);
-    };
-    beep();
-    timer = setInterval(beep, 1200);
-    navigator.vibrate?.([300, 200, 300]);
+    const ctx = getAudioContext();
+    if (!ctx) return;
+    const now = ctx.currentTime;
+
+    if (tone === "gentle_bell") {
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+      osc.type = "sine";
+      osc.frequency.setValueAtTime(587.33, now); // D5
+      gain.setValueAtTime(0.3, now);
+      gain.exponentialRampToValueAtTime(0.001, now + 1.2);
+      osc.connect(gain).connect(ctx.destination);
+      osc.start(now);
+      osc.stop(now + 1.2);
+    } else if (tone === "soft_chime") {
+      // 2-tone melodic chime
+      [523.25, 659.25].forEach((freq, idx) => {
+        const osc = ctx.createOscillator();
+        const gain = ctx.createGain();
+        const start = now + idx * 0.2;
+        osc.type = "triangle";
+        osc.frequency.setValueAtTime(freq, start);
+        gain.setValueAtTime(0.25, start);
+        gain.exponentialRampToValueAtTime(0.001, start + 0.8);
+        osc.connect(gain).connect(ctx.destination);
+        osc.start(start);
+        osc.stop(start + 0.8);
+      });
+    } else if (tone === "mellow_beep") {
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+      osc.type = "sine";
+      osc.frequency.setValueAtTime(440, now);
+      gain.setValueAtTime(0.2, now);
+      gain.exponentialRampToValueAtTime(0.001, now + 0.4);
+      osc.connect(gain).connect(ctx.destination);
+      osc.start(now);
+      osc.stop(now + 0.4);
+    } else if (tone === "pulse_radar") {
+      [880, 1174.66].forEach((freq, idx) => {
+        const osc = ctx.createOscillator();
+        const gain = ctx.createGain();
+        const start = now + idx * 0.12;
+        osc.type = "sawtooth";
+        osc.frequency.setValueAtTime(freq, start);
+        gain.setValueAtTime(0.2, start);
+        gain.exponentialRampToValueAtTime(0.001, start + 0.3);
+        osc.connect(gain).connect(ctx.destination);
+        osc.start(start);
+        osc.stop(start + 0.3);
+      });
+    } else if (tone === "urgent_ping") {
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+      osc.type = "square";
+      osc.frequency.setValueAtTime(1046.5, now);
+      gain.setValueAtTime(0.15, now);
+      gain.exponentialRampToValueAtTime(0.001, now + 0.35);
+      osc.connect(gain).connect(ctx.destination);
+      osc.start(now);
+      osc.stop(now + 0.35);
+    } else {
+      // default / continuous_alarm pulse
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+      osc.type = "sawtooth";
+      osc.frequency.setValueAtTime(800, now);
+      osc.frequency.linearRampToValueAtTime(1200, now + 0.25);
+      gain.setValueAtTime(0.25, now);
+      gain.exponentialRampToValueAtTime(0.001, now + 0.5);
+      osc.connect(gain).connect(ctx.destination);
+      osc.start(now);
+      osc.stop(now + 0.5);
+    }
   } catch {
     /* ignore */
   }
 }
 
+/** Play repeating alarm for aggressive mode */
+export function startAlarmSound() {
+  stopAlarmSound();
+  const tone = useApp.getState().aggressiveTone || "pulse_radar";
+  let count = 0;
+
+  const run = () => {
+    count++;
+    if (count > 6) {
+      stopAlarmSound();
+      return;
+    }
+    playTone(tone);
+    navigator.vibrate?.([300, 150, 300]);
+  };
+
+  run();
+  alarmTimer = setInterval(run, 1400);
+}
+
 export function stopAlarmSound() {
-  if (timer) clearInterval(timer);
-  timer = null;
-  ctx?.close().catch(() => {});
-  ctx = null;
+  if (alarmTimer) clearInterval(alarmTimer);
+  alarmTimer = null;
 }
