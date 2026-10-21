@@ -1,64 +1,165 @@
 import { createFileRoute } from "@tanstack/react-router";
-import { useEffect, useRef, useState } from "react";
-import { Send, WifiOff, Sparkles, Plus, History, Trash2, CheckCircle2, Moon, X, AlertCircle } from "lucide-react";
-import { useApp, PRAYERS, type ChatMsg, type PrayerKey, type ItemKind, today } from "@/lib/store";
+import { useEffect, useRef, useState, useMemo } from "react";
+import {
+  Send,
+  Sparkles,
+  Plus,
+  History,
+  Trash2,
+  CheckCircle2,
+  Moon,
+  X,
+  AlertCircle,
+  Mic,
+  MicOff,
+  Flame,
+  Zap,
+} from "lucide-react";
+import {
+  useApp,
+  type ChatMsg,
+  type PrayerKey,
+  PRAYER_NAMES_BN,
+  today,
+  formatAppTime,
+} from "@/lib/store";
 import { useT } from "@/lib/i18n";
-import { API_BASE } from "@/lib/update";
+import { getAiProviders, type AiProviderConfig } from "@/lib/ai-config";
+import { SUPERPOWERS_SYSTEM_PROMPT } from "@/lib/superpowers-skills";
 import { cn } from "@/lib/utils";
+import { Capacitor, CapacitorHttp } from "@capacitor/core";
 
 export const Route = createFileRoute("/ai")({
   head: () => ({
     meta: [
-      { title: "Noor AI — Islamic Routine & Habit Coach" },
-      { name: "description", content: "Plan routines, track habits and prayers with intelligent AI coach." },
-      { property: "og:title", content: "Noor AI — Islamic Routine & Habit Coach" },
-      { property: "og:description", content: "Plan routines, track habits and prayers with intelligent AI coach." },
+      { title: "Noor AI — Islamic Routine & Habit Friend" },
+      { name: "description", content: "Plan routines, track habits and prayers with intelligent AI friend." },
+      { property: "og:title", content: "Noor AI — Islamic Routine & Habit Friend" },
+      { property: "og:description", content: "Plan routines, track habits and prayers with intelligent AI friend." },
     ],
   }),
   component: AiPage,
 });
 
-/** Build rich app data context for smart AI execution */
-function buildContext() {
+/** Build comprehensive, live context of the entire app for Noor AI */
+function buildCompactContext() {
   const s = useApp.getState();
   const todayStr = today();
 
-  const todayPrayers = s.prayers.map((p) => {
-    const isDone = p.doneDates.includes(todayStr);
-    return `${p.key} (${p.time}): ${isDone ? "Done" : "Pending"}`;
-  });
+  const prayers = s.prayers
+    .map((p) => {
+      const isDone = (p.doneDates || []).includes(todayStr);
+      const name = PRAYER_NAMES_BN[p.key] || p.key;
+      return `${name}(${p.time || "সময়হীন"}): ${isDone ? "আদায়কৃত" : "বাকি"}`;
+    })
+    .join(", ");
 
-  const habitsList = s.items.filter((i) => i.kind === "habit").map((i) => {
-    const isDone = i.doneDates.includes(todayStr);
-    return `[HABIT] "${i.title}" time: ${i.time || "anytime"} - Today: ${isDone ? "Done" : "Pending"}`;
-  });
+  const habits = s.items
+    .filter((i) => i.kind === "habit")
+    .map((i) => {
+      const isDone = (i.doneDates || []).includes(todayStr);
+      return `${i.title}(${i.time || "anytime"}): ${isDone ? "সম্পন্ন" : "বাকি"}`;
+    })
+    .join(", ");
 
-  const goalsList = s.goals.map((g) => {
-    const subTasks = g.subTasks.map((st) => `  * ${st.title} (${st.doneDates.includes(todayStr) ? "Done today" : "Pending"})`).join("\n");
-    return `[GOAL] "${g.title}" (Deadline: ${g.deadline || "None"})\n${subTasks || "  * No subtasks yet"}`;
-  });
+  const goals = (s.goals || [])
+    .map((g) => {
+      const sub = (g.subTasks || []).map((st) => st.title).join("+");
+      return `${g.title} [টাস্ক: ${sub || "None"}]`;
+    })
+    .join("; ");
 
-  const todosList = s.todos.map((td) => {
-    return `[TODO] "${td.title}" Due: ${td.dueDate || "today"} Status: ${td.completed ? "Completed" : "Pending"}`;
-  });
+  const todos = (s.todos || [])
+    .filter((td) => !td.dueDate || td.dueDate === todayStr)
+    .map((td) => `${td.title}: ${td.done ? "হয়েছে" : "বাকি"}`)
+    .join(", ");
 
-  return [
-    `=== USER PROFILE ===`,
-    `Name: ${s.profile?.name || "Friend"}; Goal: ${s.profile?.goal || "Spiritual growth"}; Language: ${s.lang}`,
-    `Memory Notes: ${s.aiMemory.learnedNotes.join("; ") || "None"}`,
-    ``,
-    `=== TODAY'S PRAYER STATUS (${todayStr}) ===`,
-    ...todayPrayers,
-    ``,
-    `=== ACTIVE HABITS ===`,
-    habitsList.length ? habitsList.join("\n") : "No habits yet.",
-    ``,
-    `=== ACTIVE GOALS & DAILY TASKS ===`,
-    goalsList.length ? goalsList.join("\n") : "No goals set yet.",
-    ``,
-    `=== TO-DO LIST ===`,
-    todosList.length ? todosList.join("\n") : "No to-do items.",
-  ].filter(Boolean).join("\n");
+  const memory = (s.aiMemory.learnedNotes || []).slice(-4).join(" | ");
+
+  return `Current App State:
+User: ${s.profile?.name || "Friend"} (Language: ${s.lang}, TimeFormat: ${s.timeFormat})
+Date: ${todayStr}
+Prayers: ${prayers}
+Habits: ${habits || "None yet"}
+Goals: ${goals || "None yet"}
+Today's To-Dos: ${todos || "None yet"}
+Learned Context: ${memory || "None"}`;
+}
+
+/** Execute AI request with silent, automatic multi-provider fallback */
+async function requestAiCompletionWithFailover(
+  messages: { role: string; content: string }[],
+  onStatusChange?: (statusText: string) => void
+): Promise<{ text: string; providerName: string }> {
+  const providers = getAiProviders();
+  if (!providers.length) {
+    throw new Error("No AI API keys configured.");
+  }
+
+  let lastError: Error | null = null;
+
+  for (let i = 0; i < providers.length; i++) {
+    const p = providers[i];
+    try {
+      if (i > 0 && onStatusChange) {
+        onStatusChange(`Please wait... connecting to backup server (${p.name})`);
+      }
+
+      const url = `${p.baseUrl}/chat/completions`;
+      const bodyPayload = {
+        model: p.model || "glm-5.3-flash",
+        messages,
+        temperature: 0.7,
+        max_tokens: 650,
+      };
+
+      let resultText = "";
+
+      if (Capacitor.isNativePlatform()) {
+        const response = await CapacitorHttp.post({
+          url,
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${p.apiKey}`,
+          },
+          data: bodyPayload,
+        });
+
+        if (response.status >= 200 && response.status < 300) {
+          const data = typeof response.data === "string" ? JSON.parse(response.data) : response.data;
+          resultText = data.choices?.[0]?.message?.content ?? "";
+        } else {
+          throw new Error(`Status ${response.status}`);
+        }
+      } else {
+        const res = await fetch(url, {
+          method: "POST",
+          headers: {
+            "content-type": "application/json",
+            authorization: `Bearer ${p.apiKey}`,
+          },
+          body: JSON.stringify(bodyPayload),
+        });
+
+        if (!res.ok) {
+          throw new Error(`HTTP ${res.status}`);
+        }
+
+        const data = await res.json();
+        resultText = data.choices?.[0]?.message?.content ?? "";
+      }
+
+      if (resultText && resultText.trim()) {
+        return { text: resultText.trim(), providerName: p.name };
+      }
+    } catch (err: any) {
+      console.warn(`AI Provider [${p.name}] failed:`, err?.message || err);
+      lastError = err;
+      // Continue to next backup provider without bothering user!
+    }
+  }
+
+  throw lastError || new Error("All AI providers were temporarily unavailable.");
 }
 
 function AiPage() {
@@ -67,459 +168,534 @@ function AiPage() {
     chat,
     chatSessions,
     activeSessionId,
+    addChatMessage,
     createChatSession,
     switchChatSession,
     deleteChatSession,
-    addChatMessage,
     addItem,
-    markPrayer,
-    removeItem,
     addGoal,
     addTodo,
+    markPrayer,
     setAiMemory,
+    aiMemory,
+    profile,
     lang,
+    timeFormat,
   } = useApp();
 
   const [input, setInput] = useState("");
   const [busy, setBusy] = useState(false);
+  const [statusMessage, setStatusMessage] = useState("");
   const [err, setErr] = useState("");
-  const [online, setOnline] = useState(true);
+  const [actionNotice, setActionNotice] = useState<string | null>(null);
   const [showHistory, setShowHistory] = useState(false);
-  const endRef = useRef<HTMLDivElement>(null);
+
+  // Voice speech recognition state
+  const [isListening, setIsListening] = useState(false);
+  const [interimTranscript, setInterimTranscript] = useState("");
+  const [speechLang, setSpeechLang] = useState<"bn-BD" | "en-US">("bn-BD");
+  const recognitionRef = useRef<any>(null);
+  const listeningRequestedRef = useRef(false);
+  const recognitionRetryRef = useRef<number | null>(null);
+
+  const bottomRef = useRef<HTMLDivElement | null>(null);
+  const textareaRef = useRef<HTMLTextAreaElement | null>(null);
+
+  const adjustTextareaHeight = () => {
+    const el = textareaRef.current;
+    if (!el) return;
+    el.style.height = "auto";
+    const nextHeight = Math.min(el.scrollHeight, 130);
+    el.style.height = `${Math.max(40, nextHeight)}px`;
+  };
 
   useEffect(() => {
-    const u = () => setOnline(navigator.onLine);
-    u();
-    window.addEventListener("online", u);
-    window.addEventListener("offline", u);
-    return () => {
-      window.removeEventListener("online", u);
-      window.removeEventListener("offline", u);
-    };
-  }, []);
+    adjustTextareaHeight();
+  }, [input]);
 
   useEffect(() => {
-    endRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [chat.length, busy]);
+    bottomRef.current?.scrollIntoView({ behavior: "smooth" });
+  }, [chat.length, busy, interimTranscript]);
 
-  /** Execute action instructions parsed from AI response */
-  const executeAiAction = (actionJsonStr: string) => {
-    try {
-      const data = JSON.parse(actionJsonStr);
-      if (!data || !data.action) return null;
+  // Setup Speech Recognition
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const SpeechRecognitionClass =
+      (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
 
-      if (data.action === "ADD_ITEM") {
-        const kind: ItemKind = ["habit", "goal", "task"].includes(data.kind) ? data.kind : "habit";
-        const title: string = data.title || "নতুন টাস্ক";
-        const time: string = data.time || "";
+    if (SpeechRecognitionClass) {
+      const rec = new SpeechRecognitionClass();
+      rec.continuous = true;
+      rec.interimResults = true;
+      rec.lang = speechLang;
 
-        if (kind === "goal") {
-          addGoal(title, data.deadline || "1 week", data.subtask);
-          return {
-            type: "ADD_GOAL",
-            details: lang === "bn" ? `লক্ষ্য যোগ করা হয়েছে: ${title}` : `Goal created: ${title}`,
-          };
-        } else if (kind === "task") {
-          addTodo(title, today(), time);
-          return {
-            type: "ADD_TODO",
-            details: lang === "bn" ? `টু-ডু যোগ করা হয়েছে: ${title}` : `To-Do added: ${title}`,
-          };
-        } else {
-          addItem("habit", title, time);
-          return {
-            type: "ADD_HABIT",
-            details: lang === "bn" ? `অভ্যাস যোগ করা হয়েছে: ${title}` : `Habit added: ${title}`,
-          };
+      rec.onstart = () => {
+        setIsListening(true);
+        setInterimTranscript("");
+      };
+
+      rec.onresult = (event: any) => {
+        let interim = "";
+        let final = "";
+        for (let i = event.resultIndex; i < event.results.length; ++i) {
+          const trans = event.results[i][0]?.transcript || "";
+          if (event.results[i].isFinal) {
+            final += trans;
+          } else {
+            interim += trans;
+          }
         }
-      } else if (data.action === "MARK_PRAYER") {
-        const prayer = data.prayer?.toLowerCase() as PrayerKey;
-        if (PRAYERS.includes(prayer)) {
-          markPrayer(prayer, today(), data.done ?? true);
-          return {
-            type: "MARK_PRAYER",
-            details:
-              lang === "bn"
-                ? `${t(prayer as never)} নামাজ ${data.done === false ? "মিস হিসেবে চিহ্নিত" : "আদায় সম্পন্ন"}`
-                : `${prayer} prayer marked as ${data.done === false ? "missed" : "prayed"}`,
-          };
-        }
-      } else if (data.action === "DELETE_ITEM") {
-        const targetTitle = (data.title || "").toLowerCase();
-        const found = useApp.getState().items.find((i) => i.title.toLowerCase().includes(targetTitle));
-        if (found) {
-          removeItem(found.id);
-          return {
-            type: "DELETE_ITEM",
-            details: lang === "bn" ? `"${found.title}" সফলভাবে মোছা হয়েছে` : `Deleted: "${found.title}"`,
-          };
-        }
-      } else if (data.action === "LEARN_TONE") {
-        if (data.note) {
-          setAiMemory({
-            learnedNotes: [...useApp.getState().aiMemory.learnedNotes.slice(-5), data.note],
+
+        if (final) {
+          const cleanFinal = final.trim();
+          setInput((prev) => {
+            if (!prev) return cleanFinal;
+            if (prev.endsWith(cleanFinal)) return prev;
+            return `${prev.trim()} ${cleanFinal}`;
           });
+          setInterimTranscript("");
+        } else if (interim) {
+          setInterimTranscript(interim);
         }
-      }
-    } catch (e) {
-      console.warn("Could not parse AI action:", e);
+      };
+
+      rec.onerror = (e: any) => {
+        if (e.error !== "no-speech" && e.error !== "aborted") {
+          listeningRequestedRef.current = false;
+          setIsListening(false);
+        }
+        setInterimTranscript("");
+        if (e.error === "not-allowed") {
+          setErr(
+            lang === "bn"
+              ? "মাইক্রোফোনের অনুমতি (Permission) প্রয়োজন।"
+              : "Microphone permission is required for voice input."
+          );
+        }
+      };
+
+      rec.onend = () => {
+        setInterimTranscript("");
+        if (listeningRequestedRef.current) {
+          if (recognitionRetryRef.current !== null) window.clearTimeout(recognitionRetryRef.current);
+          recognitionRetryRef.current = window.setTimeout(() => {
+            if (!listeningRequestedRef.current) return;
+            try { rec.start(); } catch { /* ignore */ }
+          }, 350);
+        } else {
+          setIsListening(false);
+        }
+      };
+
+      recognitionRef.current = rec;
     }
-    return null;
+
+    return () => {
+      listeningRequestedRef.current = false;
+      if (recognitionRetryRef.current !== null) window.clearTimeout(recognitionRetryRef.current);
+      if (recognitionRef.current) {
+        try { recognitionRef.current.abort(); } catch {}
+      }
+    };
+  }, [speechLang]);
+
+  const toggleListening = () => {
+    if (!recognitionRef.current) {
+      setErr(
+        lang === "bn"
+          ? "আপনার ডিভাইসে স্পিচ রিকগনিশন সমর্থিত নয়।"
+          : "Speech recognition is not supported on this device."
+      );
+      return;
+    }
+
+    if (isListening) {
+      listeningRequestedRef.current = false;
+      try { recognitionRef.current.stop(); } catch {}
+      setIsListening(false);
+    } else {
+      listeningRequestedRef.current = true;
+      setErr("");
+      try { recognitionRef.current.start(); } catch (e) {
+        console.warn("Could not start recognition:", e);
+      }
+    }
   };
 
   const send = async () => {
     const text = input.trim();
-    if (!text || busy || !online) return;
+    if (!text || busy) return;
+
+    if (isListening && recognitionRef.current) {
+      listeningRequestedRef.current = false;
+      try { recognitionRef.current.stop(); } catch {}
+      setIsListening(false);
+    }
 
     const userMsg: ChatMsg = { role: "user", content: text };
     addChatMessage(userMsg);
     setInput("");
+    if (textareaRef.current) textareaRef.current.style.height = "40px";
     setBusy(true);
     setErr("");
+    setStatusMessage("");
 
     try {
       const currentHistory = [...chat, userMsg];
-      let rawReply = "";
 
-      // 1. Try internal server API if available
-      const chatUrl = API_BASE ? `${API_BASE}/api/public/chat` : "/api/public/chat";
-      try {
-        const r = await fetch(chatUrl, {
-          method: "POST",
-          headers: { "content-type": "application/json" },
-          body: JSON.stringify({ messages: currentHistory, context: buildContext(), lang }),
-        });
-        if (r.ok) {
-          const data = (await r.json()) as { reply?: string };
-          if (data.reply) rawReply = data.reply;
-        } else if (r.status === 402) {
-          const data = (await r.json()) as { error?: string };
-          throw new Error(
-            data.error ||
-              (lang === "bn"
-                ? "এআই অ্যাকাউন্টে ব্যালেন্স অপর্যাপ্ত। অনুগ্রহ করে VyceAI ক্রেডিট রিচার্জ করুন।"
-                : "Insufficient balance in AI account. Please top up VyceAI credits.")
-          );
-        }
-      } catch (innerErr) {
-        if (innerErr instanceof Error && innerErr.message.includes("balance")) {
-          throw innerErr;
-        }
-      }
+      // System Prompt combining Superpowers framework + Dynamic Context
+      const systemPrompt = `তুমি 'নূর' (Noor AI) — ব্যবহারকারীর কাছের বিশ্বস্ত ইসলামিক লাইফস্টাইল ও অভ্যাস বন্ধু।
+${SUPERPOWERS_SYSTEM_PROMPT}
 
-      // 2. Direct client fallback call to VyceAI with glm-5.3-flash
-      if (!rawReply) {
-        const systemPrompt = `You are Noor, a warm, caring Islamic habit coach and routine assistant.
-Language: Reply in ${lang === "bn" ? "smart natural Bengali" : "clear English"} matching the user.
-Adapt to user tone and habit goals.
+USER REALTIME APP CONTEXT:
+${buildCompactContext()}`;
 
-REAL APP ACTIONS:
-If the user asks to add habits, goals, to-do items or mark prayers, add a JSON block at the end:
-\`\`\`action
-{"action":"ADD_ITEM","kind":"habit"|"goal"|"task","title":"...","time":"HH:MM"}
-\`\`\`
-Or
-\`\`\`action
-{"action":"MARK_PRAYER","prayer":"fajr"|"dhuhr"|"asr"|"maghrib"|"isha","done":true}
-\`\`\`
+      // Send recent messages
+      const trimmedHistory = currentHistory.slice(-7).map((m) => ({
+        role: m.role,
+        content: m.content,
+      }));
 
-USER DATA CONTEXT:
-${buildContext()}`;
+      const { text: rawReply } = await requestAiCompletionWithFailover(
+        [{ role: "system", content: systemPrompt }, ...trimmedHistory],
+        (status) => setStatusMessage(status)
+      );
 
-        const fallbackRes = await fetch("https://vyceai.com/v1/chat/completions", {
-          method: "POST",
-          headers: {
-            "content-type": "application/json",
-            authorization: "Bearer sk-8c5c0bc6d8871536b2f2bec1d549f8382e901c65d369e5d3",
-            "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-          },
-          body: JSON.stringify({
-            model: "glm-5.3-flash",
-            messages: [
-              { role: "system", content: systemPrompt },
-              ...currentHistory.slice(-12).map((m) => ({ role: m.role, content: m.content })),
-            ],
-          }),
-        });
-
-        if (!fallbackRes.ok) {
-          const errText = await fallbackRes.text();
-          if (fallbackRes.status === 402 || errText.includes("insufficient_balance")) {
-            throw new Error(
-              lang === "bn"
-                ? "⚠️ VyceAI অ্যাকাউন্টে ব্যালেন্স শেষ হয়ে গেছে। অনুগ্রহ করে ব্যালেন্স রিচার্জ করুন।"
-                : "⚠️ Insufficient balance in VyceAI account. Please top up credits."
-            );
-          }
-          throw new Error(`AI request failed (${fallbackRes.status})`);
-        }
-
-        const data = (await fallbackRes.json()) as { choices?: { message?: { content?: string } }[] };
-        rawReply = data.choices?.[0]?.message?.content ?? "";
-      }
-
-      if (!rawReply) throw new Error("Could not get response from AI");
-
-      // Parse and execute actions
+      // Parse and execute ALL in-app action blocks
       let cleanContent = rawReply;
-      let actionResult: { type: string; details: string } | null = null;
-      const actionMatch = rawReply.match(/```action\s*([\s\S]*?)\s*```/);
+      const executedActions: string[] = [];
+      const actionMatches = [...rawReply.matchAll(/```action\s*([\s\S]*?)\s*```/gi)];
+      cleanContent = rawReply.replace(/```action[\s\S]*?```/gi, "").trim();
 
-      if (actionMatch && actionMatch[1]) {
-        actionResult = executeAiAction(actionMatch[1].trim());
-        cleanContent = rawReply.replace(/```action\s*[\s\S]*?\s*```/g, "").trim();
+      for (const match of actionMatches) {
+        try {
+          const parsed = JSON.parse(match[1] ?? "{}");
+          const title = typeof parsed.title === "string" ? parsed.title.trim() : "";
+
+          if (parsed.action === "ADD_ITEM" && title) {
+            if (parsed.kind === "goal") {
+              addGoal(title, parsed.deadline, parsed.task);
+              executedActions.push(`লক্ষ্য: ${title}`);
+            } else if (parsed.kind === "task") {
+              addTodo(title, today(), typeof parsed.time === "string" ? parsed.time : "");
+              executedActions.push(`টাস্ক: ${title}`);
+            } else if (parsed.kind === "habit") {
+              addItem("habit", title, typeof parsed.time === "string" ? parsed.time : "");
+              executedActions.push(`অভ্যাস: ${title}`);
+            }
+          } else if (parsed.action === "DELETE_ITEM" && title) {
+            if (parsed.kind === "task") {
+              useApp.getState().removeTodoByTitle(title);
+              executedActions.push(`মুছে ফেলা হয়েছে: ${title}`);
+            } else if (parsed.kind === "habit") {
+              useApp.getState().removeHabitByTitle(title);
+              executedActions.push(`মুছে ফেলা হয়েছে: ${title}`);
+            } else if (parsed.kind === "goal") {
+              useApp.getState().removeGoalByTitle(title);
+              executedActions.push(`মুছে ফেলা হয়েছে: ${title}`);
+            }
+          } else if (parsed.action === "MARK_PRAYER" && parsed.prayer && ["fajr", "dhuhr", "asr", "maghrib", "isha"].includes(parsed.prayer)) {
+            markPrayer(parsed.prayer as PrayerKey, today(), parsed.done !== false);
+            executedActions.push(`নামাজ: ${PRAYER_NAMES_BN[parsed.prayer as PrayerKey] || parsed.prayer}`);
+          }
+        } catch (e) {
+          console.warn("Failed to parse action JSON:", e);
+        }
       }
 
-      addChatMessage({
-        role: "assistant",
-        content: cleanContent,
-        actionDone: actionResult || undefined,
-      });
-    } catch (e) {
-      setErr(e instanceof Error ? e.message : "Error connecting to AI");
+      if (!cleanContent) {
+        cleanContent = executedActions.length > 0
+          ? (lang === "bn" ? `কাজগুলো অ্যাপে সফলভাবে যোগ করেছি:\n• ${executedActions.join("\n• ")}` : `Successfully created actions:\n• ${executedActions.join("\n• ")}`)
+          : (lang === "bn" ? "আমি আপনার কথাটি বুঝতে পেরেছি। বলুন কিভাবে আরও সাহায্য করতে পারি?" : "I understand. How else can I assist you?");
+      }
+
+      addChatMessage({ role: "assistant", content: cleanContent });
+
+      if (executedActions.length > 0) {
+        setActionNotice(
+          lang === "bn"
+            ? `✅ সফলভাবে সম্পন্ন হয়েছে: ${executedActions.join(", ")}`
+            : `✅ Successfully completed: ${executedActions.join(", ")}`
+        );
+        setTimeout(() => setActionNotice(null), 5000);
+      }
+    } catch (e: any) {
+      console.error("AI send error:", e);
+      setErr(
+        lang === "bn"
+          ? "নূর এআই বর্তমানে সাময়িকভাবে ব্যস্ত। অনুগ্রহ করে কিছুক্ষণ পর আবার চেষ্টা করুন।"
+          : "Noor AI is temporarily busy. Please try again shortly."
+      );
     } finally {
       setBusy(false);
+      setStatusMessage("");
     }
   };
 
   return (
-    <div className="flex h-[calc(100dvh-9rem)] flex-col gap-3 md:h-[calc(100dvh-3rem)]">
-      {/* HEADER: CLEAN CRESCENT LOGO & ACTION BUTTONS */}
-      <div className="flex items-center justify-between border-b border-border/20 pb-2">
-        <div className="flex items-center gap-2">
+    <div className="flex flex-col flex-1 h-full min-h-0 relative">
+      {/* HEADER: NOOR AI WITH CRESCENT MOON & HISTORY */}
+      <header className="flex items-center justify-between pb-3 border-b border-border/40 shrink-0">
+        <div className="flex items-center gap-2.5">
+          <div className="grid size-9 place-items-center rounded-2xl bg-primary/15 text-primary shadow-sm border border-primary/20">
+            <Moon className="size-5 fill-primary text-primary" />
+          </div>
+          <div>
+            <div className="flex items-center gap-1.5">
+              <h1 className="font-extrabold text-lg text-foreground tracking-tight">
+                {lang === "bn" ? "নূর এআই" : "Noor AI"}
+              </h1>
+              <span className="flex items-center gap-0.5 rounded-full bg-emerald-500/10 px-2 py-0.5 text-[10px] font-semibold text-emerald-500 border border-emerald-500/20">
+                <Zap className="size-2.5 fill-emerald-500" />
+                {lang === "bn" ? "সক্রিয়" : "Active"}
+              </span>
+            </div>
+            <p className="text-[11px] text-muted-foreground leading-none">
+              {lang === "bn" ? "আপনার স্মার্ট ইসলামিক রুটিন ও অভ্যাস পার্টনার" : "Your intelligent routine and habit partner"}
+            </p>
+          </div>
+        </div>
+
+        <div className="flex items-center gap-1.5">
           <button
-            onClick={() => setShowHistory(true)}
-            className="flex items-center gap-1.5 rounded-xl bg-secondary px-3 py-1.5 text-xs font-semibold hover:bg-muted transition"
-            title={lang === "bn" ? "আলোচনার ইতিহাস" : "Chat History"}
-          >
-            <History className="size-3.5" />
-            {lang === "bn" ? `ইতিহাস (${chatSessions.length})` : `History (${chatSessions.length})`}
-          </button>
-          <button
+            type="button"
             onClick={() => createChatSession()}
-            className="flex items-center gap-1.5 rounded-xl bg-primary/10 px-3 py-1.5 text-xs font-semibold text-primary hover:bg-primary/20 transition"
+            title={lang === "bn" ? "নতুন চ্যাট শুরু করুন" : "New Chat"}
+            className="flex items-center gap-1 rounded-xl bg-secondary/80 px-2.5 py-1.5 text-xs font-semibold text-foreground hover:bg-secondary transition"
           >
             <Plus className="size-3.5" />
-            {lang === "bn" ? "নতুন চ্যাট" : "New Chat"}
+            <span className="hidden sm:inline">{lang === "bn" ? "নতুন চ্যাট" : "New"}</span>
+          </button>
+          <button
+            type="button"
+            onClick={() => setShowHistory(true)}
+            title={lang === "bn" ? "চ্যাট হিস্ট্রি" : "Chat History"}
+            className="flex items-center gap-1 rounded-xl bg-secondary/80 px-2.5 py-1.5 text-xs font-semibold text-foreground hover:bg-secondary transition"
+          >
+            <History className="size-3.5" />
+            <span className="hidden sm:inline">{lang === "bn" ? "হিস্ট্রি" : "History"}</span>
           </button>
         </div>
+      </header>
 
-        {/* ELEGANT LOGO WITH CRESCENT */}
-        <div className="flex items-center gap-1.5 text-primary font-bold text-base tracking-wide">
-          <Moon className="size-4 fill-primary" />
-          <span>Noor AI</span>
-        </div>
-      </div>
-
-      {!online && (
-        <div className="glass flex items-center gap-2 p-3 text-xs text-warning">
-          <WifiOff className="size-4 shrink-0" />
-          {t("offlineAi")}
+      {/* ACTION NOTICE TOAST */}
+      {actionNotice && (
+        <div className="mt-2 flex items-center justify-between rounded-xl bg-success/15 border border-success/30 px-3 py-2 text-xs text-success animate-in fade-in shrink-0">
+          <span>{actionNotice}</span>
+          <button onClick={() => setActionNotice(null)} className="text-success/70 hover:text-success">
+            ✕
+          </button>
         </div>
       )}
 
-      {/* CHAT MESSAGES */}
-      <div className="no-scrollbar flex-1 space-y-3 overflow-y-auto overscroll-contain">
-        {chat.length === 0 && (
-          <div className="flex flex-col items-center justify-center py-10 text-center text-muted-foreground">
-            <div className="relative mb-3 grid size-16 place-items-center rounded-3xl bg-primary/10 shadow-lg">
-              <Moon className="size-8 fill-primary text-primary" />
+      {/* STATUS MESSAGE (FOR SILENT BACKUP FALLBACK) */}
+      {statusMessage && (
+        <div className="mt-2 flex items-center gap-2 rounded-xl bg-primary/10 border border-primary/20 px-3 py-1.5 text-xs text-primary animate-pulse shrink-0">
+          <Sparkles className="size-3.5" />
+          <span>{statusMessage}</span>
+        </div>
+      )}
+
+      {/* CHAT MESSAGES CONTAINER */}
+      <div className="flex-1 overflow-y-auto py-4 space-y-3 pr-1">
+        {chat.length === 0 ? (
+          <div className="my-auto flex flex-col items-center justify-center p-6 text-center text-muted-foreground">
+            <div className="grid size-16 place-items-center rounded-3xl bg-primary/10 border border-primary/20 mb-3 shadow-inner">
+              <Sparkles className="size-8 text-primary" />
             </div>
-            <p className="text-base font-bold text-foreground">
-              {lang === "bn" ? "আসসালামু আলাইকুম! আমি নূর এআই।" : "Assalamu alaikum! I am Noor AI."}
-            </p>
-            <p className="text-xs max-w-xs mt-1 leading-relaxed">
+            <h3 className="font-bold text-base text-foreground mb-1">
+              {lang === "bn" ? "আসসালামু আলাইকুম! আমি নূর।" : "Assalamu Alaikum! I am Noor."}
+            </h3>
+            <p className="max-w-xs text-xs leading-relaxed mb-4">
               {lang === "bn"
-                ? "আমি আপনার অ্যাপের নামাজ, অভ্যাস ও টাস্ক সরাসরি ম্যানেজ করতে পারি। যেকোনো লক্ষ্য যোগ করতে বলুন বা রুটিন সাজাতে সাহায্য নিন।"
-                : "I can manage your prayers, habits, goals and to-do lists directly inside this app. Ask me to add tasks or plan your routine!"}
+                ? "আপনার সারাদিনের ব্যস্ততা বা লক্ষ্যের কথা আমাকে বলুন। আমি প্রতিটি সময় অনুযায়ী একটি নিখুঁত রুটিন তৈরি করে সরাসরি আপনার অ্যাপে সেট করে দেব।"
+                : "Tell me about your day, routine, or goals. I will design a structured schedule and automatically add tasks to your app."}
             </p>
 
-            <div className="mt-4 flex flex-wrap justify-center gap-2 max-w-sm">
+            {/* Quick Suggestion Prompts */}
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 w-full max-w-md">
               <button
-                onClick={() =>
-                  setInput(
-                    lang === "bn"
-                      ? "প্রতিদিন সকাল ৭টায় কুরআন তিলাওয়াতের একটা অভ্যাস যুক্ত করো"
-                      : "Add a Quran recitation habit daily at 7 AM"
-                  )
-                }
-                className="rounded-xl border border-border/60 bg-muted/40 px-3 py-1.5 text-xs text-muted-foreground hover:text-foreground hover:bg-muted transition"
+                type="button"
+                onClick={() => setInput(lang === "bn" ? "আমার সারাদিনের জন্য একটি সুন্দর ইসলামিক রুটিন বানিয়ে অ্যাপে যোগ করে দাও" : "Build an Islamic daily routine and add habits to my app")}
+                className="glass p-2.5 text-left text-xs text-muted-foreground hover:text-foreground hover:border-primary/50 transition rounded-xl"
               >
-                ✨ {lang === "bn" ? "কুরআন তিলাওয়াত অভ্যাস যোগ করো" : "Add Quran recitation habit"}
+                💡 {lang === "bn" ? "সারাদিনের ইসলামিক রুটিন তৈরি করো" : "Create full day Islamic routine"}
               </button>
               <button
-                onClick={() =>
-                  setInput(
-                    lang === "bn"
-                      ? "আজকে আমার কোন কোন নামাজ বাকি আছে?"
-                      : "Which prayers are pending today?"
-                  )
-                }
-                className="rounded-xl border border-border/60 bg-muted/40 px-3 py-1.5 text-xs text-muted-foreground hover:text-foreground hover:bg-muted transition"
+                type="button"
+                onClick={() => setInput(lang === "bn" ? "আগামী ১ সপ্তাহে কুরআন খতমের জন্য দৈনিক পড়ার টাস্ক বানিয়ে দাও" : "Create daily Quran recitation plan for next week")}
+                className="glass p-2.5 text-left text-xs text-muted-foreground hover:text-foreground hover:border-primary/50 transition rounded-xl"
               >
-                🕌 {lang === "bn" ? "আজকের নামাজের হিসাব" : "Check today's prayers"}
+                📖 {lang === "bn" ? "কুরআন পড়ার ধারাবাহিক পরিকল্পনা" : "Quran study habit plan"}
               </button>
             </div>
+          </div>
+        ) : (
+          chat.map((m, idx) => {
+            const isUser = m.role === "user";
+            return (
+              <div
+                key={idx}
+                className={cn("flex items-start gap-2.5", isUser ? "justify-end" : "justify-start")}
+              >
+                {!isUser && (
+                  <div className="grid size-7 shrink-0 place-items-center rounded-xl bg-primary/20 text-primary border border-primary/30 mt-1">
+                    <Moon className="size-4 fill-primary" />
+                  </div>
+                )}
+                <div
+                  className={cn(
+                    "max-w-[85%] rounded-2xl px-4 py-2.5 text-xs sm:text-sm leading-relaxed whitespace-pre-wrap shadow-sm",
+                    isUser
+                      ? "bg-primary text-primary-foreground font-medium rounded-br-xs"
+                      : "glass border-border/60 text-foreground rounded-bl-xs"
+                  )}
+                >
+                  {m.content}
+                </div>
+              </div>
+            );
+          })
+        )}
+
+        {/* Busy Indicator */}
+        {busy && (
+          <div className="flex items-center gap-2 text-xs text-muted-foreground">
+            <div className="grid size-6 place-items-center rounded-lg bg-primary/15 text-primary">
+              <Moon className="size-3.5 fill-primary animate-pulse" />
+            </div>
+            <span className="animate-pulse">
+              {lang === "bn" ? "নূর চিন্তা করছে..." : "Noor is formulating..."}
+            </span>
           </div>
         )}
 
-        {chat.map((m, i) => (
-          <div
-            key={i}
-            className={cn(
-              "flex flex-col gap-1.5 max-w-[85%]",
-              m.role === "user" ? "ml-auto items-end" : "mr-auto items-start"
-            )}
-          >
-            <div
-              className={cn(
-                "whitespace-pre-wrap text-sm leading-relaxed",
-                m.role === "user"
-                  ? "rounded-2xl bg-primary px-4 py-2.5 text-primary-foreground shadow-sm font-medium"
-                  : "glass rounded-2xl px-4 py-2.5 text-foreground"
-              )}
-            >
-              {m.content}
-            </div>
-
-            {/* ACTION CARD EXECUTED */}
-            {m.actionDone && (
-              <div className="flex items-center gap-1.5 rounded-xl border border-success/40 bg-success/10 px-3 py-1.5 text-xs font-semibold text-success shadow-sm animate-in fade-in">
-                <CheckCircle2 className="size-3.5 shrink-0" />
-                <span>
-                  {lang === "bn" ? `অ্যাপে সম্পন্ন: ${m.actionDone.details}` : `Executed in app: ${m.actionDone.details}`}
-                </span>
-              </div>
-            )}
-          </div>
-        ))}
-
-        {busy && (
-          <div className="flex items-center gap-2 text-xs text-primary font-medium animate-pulse p-2">
-            <Moon className="size-3.5 animate-spin" />
-            <span>{lang === "bn" ? "নূর চিন্তা করছে ও আপডেট করছে..." : "Noor is thinking and updating..."}</span>
+        {/* Interim Speech Transcript */}
+        {isListening && interimTranscript && (
+          <div className="rounded-xl border border-primary/30 bg-primary/5 p-2 text-xs italic text-primary">
+            🎤 {interimTranscript}
           </div>
         )}
 
         {err && (
-          <div className="rounded-xl border border-destructive/40 bg-destructive/10 p-3 text-xs text-destructive flex items-center gap-2">
-            <AlertCircle className="size-4 shrink-0" />
-            <span>{err}</span>
+          <div className="rounded-xl border border-destructive/30 bg-destructive/10 p-2.5 text-xs text-destructive">
+            {err}
           </div>
         )}
 
-        <div ref={endRef} />
+        <div ref={bottomRef} />
       </div>
 
-      {/* INPUT BOX */}
-      <form
-        className="glass flex items-end gap-2 p-2"
-        onSubmit={(e) => {
-          e.preventDefault();
-          send();
-        }}
-      >
-        <textarea
-          rows={1}
-          value={input}
-          disabled={!online}
-          onChange={(e) => setInput(e.target.value)}
-          placeholder={
-            lang === "bn"
-              ? "নূর এআই-কে বলুন (যেমন: একটি অভ্যাস বা টাস্ক যোগ করো...)"
-              : "Tell Noor AI (e.g. Add a habit or task...)"
-          }
-          className="max-h-32 flex-1 resize-none bg-transparent p-2 outline-none text-sm placeholder:text-muted-foreground/60"
-          onKeyDown={(e) => {
-            if (e.key === "Enter" && !e.shiftKey) {
-              e.preventDefault();
-              send();
+      {/* INPUT BAR WITH VOICE MIC & SEND */}
+      <div className="pt-2 border-t border-border/40 shrink-0">
+        <div className="glass flex items-end gap-1.5 p-1.5 rounded-2xl border-border/70 focus-within:border-primary/60 transition">
+          <button
+            type="button"
+            onClick={toggleListening}
+            title={isListening ? (lang === "bn" ? "ভয়েস ইনপুট বন্ধ" : "Stop voice") : (lang === "bn" ? "ভয়েসে কথা বলুন" : "Speak")}
+            className={cn(
+              "grid size-9 shrink-0 place-items-center rounded-xl transition",
+              isListening
+                ? "bg-destructive text-destructive-foreground animate-pulse"
+                : "text-muted-foreground hover:bg-secondary hover:text-foreground"
+            )}
+          >
+            {isListening ? <MicOff className="size-4" /> : <Mic className="size-4" />}
+          </button>
+
+          <textarea
+            ref={textareaRef}
+            rows={1}
+            value={input}
+            onChange={(e) => setInput(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter" && !e.shiftKey) {
+                e.preventDefault();
+                send();
+              }
+            }}
+            placeholder={
+              isListening
+                ? (lang === "bn" ? "শুনছি... কথা বলুন" : "Listening...")
+                : (lang === "bn" ? "নূরকে কিছু বলুন বা সারাদিনের কাজের কথা লিখুন..." : "Message Noor...")
             }
-          }}
-        />
-        <button
-          disabled={busy || !online || !input.trim()}
-          aria-label={t("send")}
-          className="grid size-10 shrink-0 place-items-center rounded-xl bg-primary text-primary-foreground disabled:opacity-40 transition shadow"
-        >
-          <Send className="size-4" />
-        </button>
-      </form>
+            className="flex-1 resize-none bg-transparent px-2 py-2 text-xs sm:text-sm text-foreground placeholder:text-muted-foreground focus:outline-none max-h-32 min-h-[38px]"
+          />
 
-      {/* CHAT HISTORY MODAL / DRAWER */}
+          <button
+            type="button"
+            onClick={send}
+            disabled={!input.trim() || busy}
+            className="grid size-9 shrink-0 place-items-center rounded-xl bg-primary text-primary-foreground shadow transition hover:opacity-90 disabled:opacity-40"
+          >
+            <Send className="size-4" />
+          </button>
+        </div>
+      </div>
+
+      {/* CHAT SESSIONS DRAWER / MODAL */}
       {showHistory && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-background/80 p-4 backdrop-blur-sm animate-in fade-in">
-          <div className="glass flex max-h-[80vh] w-full max-w-md flex-col overflow-hidden p-5 shadow-2xl rounded-2xl border border-border/60">
-            <div className="flex items-center justify-between pb-3 border-b border-border/40">
-              <h2 className="text-base font-bold flex items-center gap-2">
-                <History className="size-4 text-primary" />
-                {lang === "bn" ? "আলোচনার ইতিহাস (Chat History)" : "Chat History"}
-              </h2>
-              <button
-                onClick={() => setShowHistory(false)}
-                className="text-muted-foreground hover:text-foreground"
-              >
-                <X className="size-5" />
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4 backdrop-blur-sm animate-in fade-in">
+          <div className="glass my-auto flex w-full max-w-sm flex-col gap-3 p-4 shadow-2xl border-border/60">
+            <div className="flex items-center justify-between border-b border-border/40 pb-2">
+              <h3 className="text-sm font-bold text-foreground">
+                {lang === "bn" ? "পূর্ববর্তী আলাপচারিতা (History)" : "Chat History"}
+              </h3>
+              <button onClick={() => setShowHistory(false)} className="text-muted-foreground hover:text-foreground">
+                ✕
               </button>
             </div>
 
-            <div className="my-3">
-              <button
-                onClick={() => {
-                  createChatSession();
-                  setShowHistory(false);
-                }}
-                className="w-full flex items-center justify-center gap-2 rounded-xl bg-primary py-2.5 text-xs font-semibold text-primary-foreground transition hover:opacity-90"
-              >
-                <Plus className="size-4" />
-                {lang === "bn" ? "নতুন আলোচনা শুরু করুন (New Chat)" : "Start New Chat"}
-              </button>
-            </div>
-
-            <div className="no-scrollbar flex-1 space-y-2 overflow-y-auto">
-              {chatSessions.map((sess) => {
-                const isActive = sess.id === activeSessionId;
-                return (
+            <div className="max-h-64 overflow-y-auto space-y-1.5">
+              {(chatSessions || []).length === 0 ? (
+                <p className="text-xs text-muted-foreground p-3 text-center">
+                  {lang === "bn" ? "কোনো চ্যাট হিস্ট্রি নেই।" : "No previous chats."}
+                </p>
+              ) : (
+                chatSessions.map((session) => (
                   <div
-                    key={sess.id}
-                    onClick={() => {
-                      switchChatSession(sess.id);
-                      setShowHistory(false);
-                    }}
+                    key={session.id}
                     className={cn(
-                      "flex items-center justify-between rounded-xl p-3 cursor-pointer transition border",
-                      isActive
-                        ? "border-primary bg-primary/10 glow-on"
-                        : "border-border/30 bg-secondary/40 hover:bg-secondary"
+                      "flex items-center justify-between rounded-xl p-2 text-xs transition cursor-pointer",
+                      session.id === activeSessionId
+                        ? "bg-primary/20 text-foreground font-semibold"
+                        : "hover:bg-secondary/60 text-muted-foreground"
                     )}
                   >
-                    <div className="flex-1 min-w-0 pr-2">
-                      <p className="truncate text-xs font-semibold text-foreground">
-                        {sess.title}
-                      </p>
-                      <p className="text-[10px] text-muted-foreground mt-0.5">
-                        {sess.createdAt} • {sess.messages.length} {lang === "bn" ? "টি বার্তা" : "messages"}
-                      </p>
-                    </div>
-
+                    <span
+                      onClick={() => {
+                        switchChatSession(session.id);
+                        setShowHistory(false);
+                      }}
+                      className="truncate flex-1 pr-2"
+                    >
+                      {session.title || (lang === "bn" ? "নতুন আলাপ" : "Conversation")}
+                    </span>
                     <button
+                      type="button"
                       onClick={(e) => {
                         e.stopPropagation();
-                        deleteChatSession(sess.id);
+                        deleteChatSession(session.id);
                       }}
-                      className="text-muted-foreground hover:text-destructive p-1 rounded transition"
-                      title={lang === "bn" ? "মুছে ফেলুন" : "Delete"}
+                      className="text-muted-foreground hover:text-destructive p-1"
                     >
                       <Trash2 className="size-3.5" />
                     </button>
                   </div>
-                );
-              })}
+                ))
+              )}
             </div>
 
-            <div className="mt-3 pt-2 border-t border-border/30 text-center text-[10px] text-muted-foreground">
-              🔒 {lang === "bn" ? "সমস্ত আলোচনা আপনার ফোনেই নিরাপদে সংরক্ষিত।" : "All chat sessions are saved securely on your device."}
-            </div>
+            <button
+              type="button"
+              onClick={() => {
+                createChatSession();
+                setShowHistory(false);
+              }}
+              className="w-full rounded-xl bg-primary py-2 text-xs font-semibold text-primary-foreground hover:opacity-90 transition"
+            >
+              + {lang === "bn" ? "নতুন চ্যাট শুরু করুন" : "Start New Chat"}
+            </button>
           </div>
         </div>
       )}
